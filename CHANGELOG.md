@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Display the standalone app as Store in the Kindle library and Launcher grid.
+
 ## 0.1.0
 
 - Search the catalog by title, description line, developer or category.

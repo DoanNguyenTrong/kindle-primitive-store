@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install Primitive Store on the Kindle over SSH (Wi-Fi), on its own: its program and its library entry. It does not
+# Install Store on the Kindle over SSH (Wi-Fi), on its own: its program and its library entry. It does not
 # touch the launcher. The store's catalog, installed apps and records stay in /mnt/us/launcher/store.
 #
 #   deploy/install-ssh.sh path/to/kl-store-app
@@ -32,4 +32,4 @@ if [ "$local_sum" != "$remote_sum" ]; then
     echo "checksum mismatch" >&2
     exit 1
 fi
-echo "installed Primitive Store ($(wc -c < "$BIN" | tr -d ' ') bytes, sha256 $local_sum)"
+echo "installed Store ($(wc -c < "$BIN" | tr -d ' ') bytes, sha256 $local_sum)"

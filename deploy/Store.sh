@@ -1,8 +1,8 @@
 #!/bin/sh
-# Name: Primitive Store
+# Name: Store
 # Author: Primitive AI
 # DontUseFBInk
-# Opens Primitive Store from the Kindle library. The program is copied to tmpfs and run from there, so /mnt/us stays free
+# Opens Store from the Kindle library. The program is copied to tmpfs and run from there, so /mnt/us stays free
 # for USB drive mode. When the store ends (Done), the launcher takes the screen again.
 
 BIN=/mnt/us/store/bin/kl-store-app

@@ -1,6 +1,6 @@
 <div align="center">
 
-# Primitive Store
+# Store
 
 **Find and manage apps on a jailbroken Kindle.**
 
@@ -10,7 +10,7 @@
 
 ---
 
-Primitive Store brings Today, Apps, Updates, and Search to the Kindle in a grayscale interface. Open an app page to
+Store brings Today, Apps, Updates, and Search to the Kindle in a grayscale interface. Open an app page to
 see the version, download size, firmware requirements, screenshots, and what it changes before you install.
 The Store is a standalone Rust application that uses Primitive Launcher's fonts and settings.
 
@@ -42,7 +42,7 @@ The Store is a standalone Rust application that uses Primitive Launcher's fonts 
 ## Quick start
 
 Set up Primitive Launcher on a jailbroken Kindle. Install a Store package over USB, or use the Launcher Store tile
-when a Store release is available in its catalogue. Open **Primitive Store** in the Launcher grid and use **Refresh**
+when a Store release is available in its catalogue. Open **Store** in the Launcher grid and use **Refresh**
 to fetch the catalogue. [Install guide](INSTALL.md)
 
 The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
@@ -63,7 +63,7 @@ cargo test --locked --workspace
 cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.0 --arch armhf --stage build/stage --license LICENSE \
+  --version 0.1.1 --arch armhf --stage build/stage --license LICENSE \
   --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 

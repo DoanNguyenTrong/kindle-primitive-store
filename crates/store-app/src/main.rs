@@ -1,4 +1,4 @@
-//! Primitive Store: the app store for the Kindle, as its own program. The launcher opens it from the library, the way
+//! Store: the app store for the Kindle, as its own program. The launcher opens it from the library, the way
 //! it opens Primitive Browser. It draws on the e-ink panel with the stock framework stopped. Done ends it, and the
 //! launcher is back on the grid. Its catalog, installed apps and records are kept beside the launcher's (in
 //! `/mnt/us/launcher/store`), so an app installed through the store is the same app the launcher shows.
