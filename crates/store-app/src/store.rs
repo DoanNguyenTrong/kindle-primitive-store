@@ -161,6 +161,7 @@ fn store_install_app(
     }
     let version = kl_store::resolve::pick_version(&listing, device).map_err(|e| e.to_string())?;
     let asset = version.assets.get(&device.arch).ok_or("No package is available for this Kindle.")?;
+    kl_store::verify::check_archive_size(asset.size).map_err(|e| e.to_string())?;
     let installed = record(dir)?;
     if let Some((required, version, _)) = resolve::missing_requirements(&version.requires, &|id| {
         installed.apps.get(id).and_then(|app| Version::parse(&app.version))
