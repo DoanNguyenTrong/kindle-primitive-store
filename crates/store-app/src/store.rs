@@ -4,7 +4,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{atomic::{AtomicBool, Ordering}, mpsc::Sender, Arc},
+    sync::{atomic::{AtomicBool, Ordering}, mpsc::Sender, Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -16,17 +16,17 @@ use kl_store::{
     catalog::{valid_app_id, Collection, CollectionIndex, Listing},
     pipeline::{DownloadedPackage, Stage},
     record::Record,
-    refresh::{self, CachedCatalog},
+    refresh::{self, CachedCatalog, Source},
     resolve::{self, Device},
     signatures::TrustedKey,
     Version,
 };
-use primitive_net::Policy;
+use primitive_net::{NetError, Policy};
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
 const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
 const CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
-const CATALOG_REFRESH_TIMEOUT: Duration = Duration::from_secs(75);
+const CATALOG_PROGRESS_INTERVAL: Duration = Duration::from_millis(1500);
 
 #[derive(Clone, Default)]
 pub struct CatalogRefresh(Arc<AtomicBool>);
@@ -56,34 +56,48 @@ impl kl_store::refresh::Source for NetSource {
 struct RefreshSource<'a> {
     client: primitive_net::FetchClient,
     cancel: &'a CatalogRefresh,
-    deadline: Instant,
     tx: &'a Sender<Ev>,
+    last_progress: Mutex<Option<Instant>>,
+}
+
+impl RefreshSource<'_> {
+    fn fetch<T>(&self, request: impl Fn() -> Result<T, NetError>) -> Result<T, String> {
+        self.check_refresh()?;
+        let result = request();
+        if matches!(result, Err(NetError::Timeout | NetError::Transport(_) | NetError::Status(502..=504))) {
+            self.check_refresh()?;
+            return request().map_err(|error| error.to_string());
+        }
+        result.map_err(|error| error.to_string())
+    }
 }
 
 impl refresh::Source for RefreshSource<'_> {
     fn text(&self, url: &str) -> Result<String, String> {
-        self.check_refresh()?;
-        self.client.fetch_text(url, refresh::MAX_INDEX).map_err(|error| error.to_string())
+        self.fetch(|| self.client.fetch_text(url, refresh::MAX_INDEX))
     }
 
     fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
-        self.check_refresh()?;
-        self.client.fetch_bytes(url, max).map_err(|error| error.to_string())
+        self.fetch(|| self.client.fetch_bytes(url, max))
     }
 
     fn check_refresh(&self) -> Result<(), String> {
         if self.cancel.cancelled() {
             Err("the catalog refresh was stopped".into())
-        } else if Instant::now() >= self.deadline {
-            Err("the catalog refresh took too long. Check Wi-Fi and try again.".into())
         } else {
             Ok(())
         }
     }
 
     fn report_refresh(&self, completed: usize, total: usize) {
+        let mut last = self.last_progress.lock().unwrap();
+        let now = Instant::now();
+        if completed > 0 && completed < total && last.is_some_and(|last| now - last < CATALOG_PROGRESS_INTERVAL) {
+            return;
+        }
+        *last = Some(now);
         let _ = self.tx.send(Ev::StoreProgress {
-            message: format!("Refreshing catalog… {completed} of {total} listings checked."),
+            message: format!("Checking for updates ({completed}/{total})"),
             percent: None,
         });
     }
@@ -297,6 +311,7 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) -> CatalogRefresh {
     let cancel = refresh.clone();
     thread::spawn(move || {
         let cache = dir.join("store/cache");
+        let started = Instant::now();
         log("store: refresh started");
         // A panic must still end the refresh (the button waits for it), so it is caught and reported as an error.
         let outcome = std::panic::catch_unwind(|| {
@@ -304,38 +319,71 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) -> CatalogRefresh {
             policy.timeout = CATALOG_REQUEST_TIMEOUT;
             let source = RefreshSource {
                 client: primitive_net::FetchClient::new(policy), cancel: &cancel,
-                deadline: Instant::now() + CATALOG_REFRESH_TIMEOUT, tx: &tx,
+                tx: &tx, last_progress: Mutex::new(None),
             };
             let key = signing_key()?;
             refresh::refresh_with_key(STORE_CATALOG, &cache, &source, key.as_ref())
         })
             .unwrap_or_else(|_| Err("an internal error".to_string()));
-        let message = match outcome {
+        let (message, catalog_updated, artwork_changed) = match outcome {
             Ok(report) => {
-                log(&format!("store: refreshed {} apps, {} failed, {} removed", report.refreshed, report.failed.len(), report.removed));
-                if report.failed.is_empty() {
-                    format!("Store updated: {} apps.", report.refreshed)
-                } else {
-                    format!("Store updated: {} apps. {} could not be updated.", report.refreshed, report.failed.len())
+                log(&format!("store: refreshed {} listings, reused {}, {} listing failures, {} artwork failures, {} files removed in {} ms",
+                    report.refreshed, report.reused, report.failed.len(), report.artwork_failed.len(), report.removed, started.elapsed().as_millis()));
+                for (id, reason) in &report.failed {
+                    log(&format!("store: could not refresh {id}: {reason}"));
                 }
+                for (id, reason) in &report.artwork_failed {
+                    log(&format!("store: could not load artwork for {id}: {reason}"));
+                }
+                let artwork_changed = report.refreshed > 0 || report.removed > 0;
+                let message = if !report.failed.is_empty() {
+                    format!("Could not check {} listings. Try again.", report.failed.len())
+                } else if !report.artwork_failed.is_empty() {
+                    "Catalog updated. Some images could not load.".into()
+                } else if artwork_changed {
+                    "Catalog updated.".into()
+                } else {
+                    "Catalog is up to date.".into()
+                };
+                (message, true, artwork_changed)
             }
             Err(e) => {
-                log(&format!("store: refresh failed: {e}"));
-                format!("The store could not be updated: {e}")
+                log(&format!("store: refresh failed after {} ms: {e}", started.elapsed().as_millis()));
+                (format!("The store could not be updated: {e}"), false, false)
             }
         };
-        let entries = if cancel.cancelled() { Vec::new() } else { load_store(&dir) };
-        let _ = tx.send(Ev::StoreRefreshed { entries, message });
+        let entries = (catalog_updated && !cancel.cancelled()).then(|| load_store(&dir));
+        let _ = tx.send(Ev::StoreRefreshed { entries, message, artwork_changed });
     });
     refresh
 }
 
 /// The store's entries: one per listing in the catalog cache (`store/cache/apps/*.json`), with what is installed.
 pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
+    let catalog = signing_key().and_then(|key| local_catalog(dir, key.as_ref())).ok();
+    load_entries(dir, catalog.as_ref())
+}
+
+/// Use the same verified snapshot for the first page, collections and artwork.
+pub fn load_catalog_view(dir: &Path) -> (Vec<StoreEntry>, Vec<Collection>, Option<PathBuf>) {
+    let catalog = signing_key().and_then(|key| local_catalog(dir, key.as_ref())).ok();
+    let entries = load_entries(dir, catalog.as_ref());
+    let cache = catalog.map(|cached| cached.directory().to_path_buf());
+    let collections = cache.as_deref().map(load_collections).unwrap_or_default();
+    (entries, collections, cache)
+}
+
+pub fn load_catalog_artwork(dir: &Path) -> (Vec<Collection>, Option<PathBuf>) {
+    let cache = cache_directory(dir);
+    let collections = cache.as_deref().map(load_collections).unwrap_or_default();
+    (collections, cache)
+}
+
+fn load_entries(dir: &Path, catalog: Option<&CachedCatalog>) -> Vec<StoreEntry> {
     let mut installed = record(dir).unwrap_or_default();
     let device = device::store_device();
     let mut entries = Vec::new();
-    if let Ok(catalog) = signing_key().and_then(|key| local_catalog(dir, key.as_ref())) {
+    if let Some(catalog) = catalog {
         let files = fs::read_dir(catalog.directory().join("apps"));
         for path in files.into_iter().flatten().flatten().map(|entry| entry.path()) {
             if path.extension().is_none_or(|extension| extension != "json") {
@@ -360,8 +408,7 @@ pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
     entries
 }
 
-pub fn load_collections(dir: &Path) -> Vec<Collection> {
-    let Some(cache) = cache_directory(dir) else { return Vec::new() };
+fn load_collections(cache: &Path) -> Vec<Collection> {
     fs::read(cache.join("collections.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<CollectionIndex>(&bytes).ok())

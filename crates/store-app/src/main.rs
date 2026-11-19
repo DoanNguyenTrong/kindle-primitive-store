@@ -3,6 +3,7 @@
 //! launcher is back on the grid. Its catalog, installed apps and records are kept beside the launcher's (in
 //! `/mnt/us/launcher/store`), so an app installed through the store is the same app the launcher shows.
 
+mod artwork;
 mod crash_log;
 mod requirements;
 mod storage_lease;
@@ -55,12 +56,19 @@ fn catalog_is_stale(dir: &Path, now: SystemTime) -> bool {
         .is_none_or(|modified| now.duration_since(modified).is_ok_and(|elapsed| elapsed >= CATALOG_AGE))
 }
 
-fn load_catalog_pictures(renderer: &mut kl_render::Renderer, dir: &Path) {
-    if let Some(cache) = store::cache_directory(dir) {
-        kl_render::load_store_pictures(renderer, &cache);
-    } else {
-        renderer.clear_store_artwork();
+fn recover(root: &Path, storage: &mut StorageLease) -> Result<(), String> {
+    let paths = kl_store::install::Paths::under(root);
+    // Browsing only needs short-lived reads. Pause USB to recover a transaction when one is present.
+    if !paths.journal.try_exists().map_err(|error| error.to_string())? {
+        return Ok(());
     }
+    storage.begin_write()?;
+    let result = kl_store::install::recover_with_hooks(&paths, &kl_kindle::package_hooks::KindleHookRunner);
+    release_write(storage);
+    if let Some(what) = result.map_err(|error| error.to_string())? {
+        log(&format!("store: {what}"));
+    }
+    Ok(())
 }
 
 fn connected(status: &Status) -> bool {
@@ -91,7 +99,7 @@ fn request_exit(ui: &mut Ui, storage: &StorageLease, refresh: Option<&store::Cat
     if let Some(refresh) = refresh {
         refresh.cancel();
         ui.notice = None;
-        ui.store_progress = Some("Stopping the catalog refresh…".into());
+        ui.store_progress = Some("Stopping refresh".into());
     } else {
         ui.notice = Some("Wait for the current Store change to finish.".into());
     }
@@ -104,7 +112,7 @@ fn start_catalog_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, storage: &mut
         return None;
     }
     ui.notice = None;
-    ui.store_progress = Some("Checking the catalog…".into());
+    ui.store_progress = Some("Checking for updates".into());
     ui.store_progress_percent = None;
     Some(store::start_store_refresh(tx.clone(), dir.to_path_buf()))
 }
@@ -112,7 +120,7 @@ fn start_catalog_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, storage: &mut
 fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, status: &Status, storage: &mut StorageLease,
     refresh: &mut Option<store::CatalogRefresh>) -> bool {
     if !settings.store_daily_check || ui.store_busy || ui.store_installing.is_some() || ui.store_batch_running
-        || !connected(status) || !catalog_is_stale(dir, SystemTime::now())
+        || !connected(status)
     {
         return false;
     }
@@ -121,6 +129,7 @@ fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, 
 }
 
 fn main() {
+    let launched = Instant::now();
     let dir = env_dir("KL_DIR", "/mnt/us/launcher");
     let run = env_dir("KL_RUN", "/var/tmp/kl-store");
     let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
@@ -132,23 +141,11 @@ fn main() {
     log(&format!("store v{} profile {} dir {}", env!("CARGO_PKG_VERSION"), profile::ACTIVE.catalog_name, dir.display()));
     let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
 
-    if let Err(error) = storage.begin_write() {
-        log(&format!("store: cannot start: {error}"));
-        process::exit(2);
-    }
-
     // An install that a power cut interrupted is finished or undone before the store reads what is installed.
-    let recovery_problem = match kl_store::install::recover_with_hooks(&kl_store::install::Paths::under(&root), &kl_kindle::package_hooks::KindleHookRunner) {
-        Ok(Some(what)) => {
-            log(&format!("store: {what}"));
-            None
-        }
-        Ok(None) => None,
-        Err(e) => {
-            log(&format!("store: cannot check an unfinished install: {e}"));
-            Some(format!("Store recovery is pending. {e}"))
-        }
-    };
+    let recovery_problem = recover(&root, &mut storage).err().map(|error| {
+        log(&format!("store: cannot check an unfinished install: {error}"));
+        format!("Store recovery is pending. {error}")
+    });
 
     let mut settings = Settings::parse(&fs::read_to_string(dir.join("settings.txt")).unwrap_or_default());
     if let Err(e) = set_orientation(&run, settings.rotation) {
@@ -164,15 +161,20 @@ fn main() {
     let mut ui = Ui::new(Vec::new(), Layout::new(W, H, 4, 5));
     ui.version = env!("CARGO_PKG_VERSION").to_string();
     ui.store_daily_check = settings.store_daily_check;
-    ui.store_collections = store::load_collections(&dir);
-    ui.set_store(store::load_store(&dir));
-    load_catalog_pictures(&mut renderer, &dir);
+    let catalog_started = Instant::now();
+    let (entries, collections, cache) = store::load_catalog_view(&dir);
+    let catalog_ms = catalog_started.elapsed().as_millis();
+    // The supervisor pauses USB while it starts Store, even when recovery had no journal to check.
+    release_write(&mut storage);
+    ui.store_collections = collections;
+    ui.set_store(entries);
     ui.open_store();
 
     let mut display = Display::open();
-    let mut status = device::status(&settings);
+    let mut status = Status { usb: device::usb_state(), dark_mode: settings.dark_mode, rotation: settings.rotation, ..Status::default() };
     ui.usb = status.usb;
     let (tx, rx) = channel::<Ev>();
+    let mut artwork = artwork::Artwork::new(cache, tx.clone());
     if let Some(path) = input::find(profile::ACTIVE.touch_name) {
         let t = tx.clone();
         thread::spawn(move || input::touch_loop(path, t));
@@ -199,19 +201,23 @@ fn main() {
             }
         });
     }
-    release_write(&mut storage);
     let mut refresh = None;
-    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh);
     if let Some(problem) = &recovery_problem {
         ui.notice = Some(problem.clone());
     }
-    let mut next_check = Instant::now() + HOUR;
+    let mut next_check = Instant::now();
     display.show(renderer.draw(&ui, &status), &settings, true);
+    if display.has_presented_frame() {
+        let uptime = fs::read_to_string("/proc/uptime").ok().and_then(|raw| raw.split_whitespace().next().map(str::to_string));
+        log(&format!("store: first frame submitted in {} ms (catalog {} ms, uptime {}s, {} listings)",
+            launched.elapsed().as_millis(), catalog_ms, uptime.as_deref().unwrap_or("unknown"), ui.store.len()));
+    }
+    artwork.update_page(&ui, &mut renderer);
 
     while let Ok(ev) = rx.recv() {
         let action = match ev {
             Ev::Input(Input::Wake) => {
-                status = device::status(&settings);
+                status.usb = device::usb_state();
                 ui.usb = status.usb;
                 ui.handle(Input::Wake)
             }
@@ -223,21 +229,30 @@ fn main() {
                 }
                 ui.handle(input)
             }
-            Ev::Tick if ui.screen == Screen::Sleep => Action::None,
+            Ev::Tick if ui.screen == Screen::Sleep => {
+                artwork.collect(&mut renderer, false);
+                Action::None
+            }
             Ev::Tick => {
                 let usb = device::usb_state();
+                let new_artwork = artwork.collect(&mut renderer, usb != Usb::Drive);
+                let usb_changed = ui.usb != usb;
+                ui.usb = usb;
+                status.usb = usb;
                 let timed_refresh = if Instant::now() >= next_check {
                     next_check = Instant::now() + HOUR;
-                    status = device::status(&settings);
-                    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh)
+                    if settings.store_daily_check && status.usb != Usb::Drive && catalog_is_stale(&dir, SystemTime::now()) {
+                        (status.wifi_on, status.wifi_state) = device::wifi_status();
+                        maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh)
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 };
-                if ui.usb != usb {
-                    ui.usb = usb;
-                    status.usb = usb;
+                if usb_changed {
                     Action::Redraw { full: true }
-                } else if timed_refresh {
+                } else if timed_refresh || new_artwork {
                     Action::Redraw { full: false }
                 } else {
                     Action::None
@@ -251,15 +266,18 @@ fn main() {
                 }
                 Action::Redraw { full: true }
             }
-            Ev::StoreRefreshed { entries, message } => {
+            Ev::StoreRefreshed { entries, message, artwork_changed } => {
                 if refresh.take().is_some_and(|refresh| refresh.cancelled()) {
                     release_write(&mut storage);
                     log("store: done after stopping the catalog refresh");
                     break;
                 }
-                load_catalog_pictures(&mut renderer, &dir);
-                ui.store_collections = store::load_collections(&dir);
-                ui.update_store(entries);
+                if let Some(entries) = entries {
+                    let (collections, cache) = store::load_catalog_artwork(&dir);
+                    artwork.replace_cache(cache, artwork_changed, &mut renderer);
+                    ui.store_collections = collections;
+                    ui.update_store(entries);
+                }
                 ui.store_busy = false;
                 ui.store_progress = None;
                 ui.notice = Some(message);
@@ -295,9 +313,15 @@ fn main() {
         }
         match action {
             Action::Redraw { .. } if ui.screen == Screen::Sleep => {}
-            Action::Redraw { full } => display.show(renderer.draw(&ui, &status), &settings, full),
+            Action::Redraw { full } => {
+                display.show(renderer.draw(&ui, &status), &settings, full);
+                artwork.update_page(&ui, &mut renderer);
+            }
             Action::Device(cmd) => {
-                status = device::status(&settings);
+                status.usb = device::usb_state();
+                if matches!(cmd, DeviceCmd::StoreRefresh | DeviceCmd::StoreInstall(_) | DeviceCmd::StoreUpdateAll) {
+                    (status.wifi_on, status.wifi_state) = device::wifi_status();
+                }
                 let closed_modal = ui.store_sheet.is_some() || ui.store_batch_confirm;
                 if cmd == DeviceCmd::StoreToggleDailyCheck {
                     if begin_write(&mut storage, &mut ui) {
@@ -318,7 +342,7 @@ fn main() {
                             Ok(()) => {
                                 ui.store_collections.clear();
                                 ui.update_store(store::load_store(&dir));
-                                load_catalog_pictures(&mut renderer, &dir);
+                                artwork.replace_cache(None, true, &mut renderer);
                                 "Cleared the saved store catalog.".to_string()
                             }
                             Err(e) => format!("The saved catalog could not be cleared. {e}"),
@@ -343,6 +367,7 @@ fn main() {
                 }
                 let full = closed_modal && ui.store_sheet.is_none() && !ui.store_batch_confirm;
                 display.show(renderer.draw(&ui, &status), &settings, full);
+                artwork.update_page(&ui, &mut renderer);
             }
             _ => {}
         }
@@ -373,7 +398,7 @@ enum Effect<'a> {
 
 fn store_command<'a>(cmd: DeviceCmd, status: &Status, entries: &'a [StoreEntry]) -> (Option<String>, Effect<'a>) {
     match cmd {
-        DeviceCmd::StoreRefresh if connected(status) => (Some("Updating the store…".to_string()), Effect::Refresh),
+        DeviceCmd::StoreRefresh if connected(status) => (None, Effect::Refresh),
         DeviceCmd::StoreRefresh => (Some("Connect to Wi-Fi to update the store.".to_string()), Effect::None),
         DeviceCmd::StoreInstall(index) => match entries.get(index) {
             Some(entry) if !entry.can_install() => (Some(entry.status_line()), Effect::None),
@@ -499,7 +524,7 @@ mod tests {
         assert!(!request_exit(&mut ui, &storage, Some(&refresh)));
         assert!(refresh.cancelled());
         assert!(storage.writing());
-        assert_eq!(ui.store_progress.as_deref(), Some("Stopping the catalog refresh…"));
+        assert_eq!(ui.store_progress.as_deref(), Some("Stopping refresh"));
 
         storage.finish_write().unwrap();
         assert!(request_exit(&mut ui, &storage, None));

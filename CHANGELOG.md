@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4
+
+- Show the cached catalog immediately and preload icons for nearby pages. Decode screenshots when opening an app page.
+- Reuse unchanged catalog entries and check changed listings in parallel. Keep completed listings available when images fail.
+- Simplify refresh progress and keep Done available during a refresh.
+
 ## 0.1.3
 
 - Show catalog refresh progress and let Done stop a refresh safely before returning to Launcher.
