@@ -176,10 +176,10 @@ fn store_install_app(
     let zip = downloads.join(format!("{id}.zip"));
     progress("Downloading", Some(0));
     let mut last_step = 0;
-    // The byte count in the checked catalog remains available if the server omits Content-Length.
-    primitive_net::download(&asset.url, &zip, &policy(asset.size.saturating_add(1)), |bytes, _| {
+    // Keep interrupted bytes for this exact package so a retry can continue from the saved position.
+    primitive_net::download_resumable(&asset.url, &zip, &policy(asset.size), asset.size, &asset.sha256, |bytes, _| {
         let step = (bytes.saturating_mul(10) / asset.size).min(10) as u8;
-        if step > last_step {
+        if step != last_step {
             last_step = step;
             progress("Downloading", Some(step * 10));
         }
@@ -264,6 +264,11 @@ pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
         })
         .collect();
     entries.extend(installed.apps.values().map(StoreEntry::from_installed));
+    if std::env::var(kl_core::store_open::CAPABILITY).as_deref() != Ok("1") {
+        for entry in &mut entries {
+            entry.launchable = false;
+        }
+    }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
 }
@@ -385,7 +390,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn install_downloads_checks_records_and_removes_a_fixture_package() {
+    fn install_resumes_checks_records_and_removes_a_fixture_package() {
         let fixture = Fixture::new();
         let zip_path = fixture.root.join("fixture.zip");
         let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
@@ -402,28 +407,48 @@ pub(crate) mod tests {
         let url = format!("http://{}/app.zip", listener.local_addr().unwrap());
         fixture.write_listing(&listing(&url, &sha, size));
         let body = fs::read(zip_path).unwrap();
+        let offset = body.len() / 2;
         let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            let mut request = Vec::new();
-            while !request.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                stream.read_exact(&mut byte).unwrap();
-                request.push(byte[0]);
+            for resumed in [false, true] {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
+                if resumed {
+                    assert!(headers.contains(&format!("\r\nrange: bytes={offset}-\r\n")));
+                    write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {}-{}/{}\r\nConnection: close\r\n\r\n",
+                        body.len() - offset, offset, body.len() - 1, body.len()).unwrap();
+                    stream.write_all(&body[offset..]).unwrap();
+                } else {
+                    assert!(!headers.contains("\r\nrange:"));
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                    stream.write_all(&body[..offset]).unwrap();
+                }
             }
-            write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
-            stream.write_all(&body).unwrap();
         });
 
         let device = Device { arch: "armhf".into(), firmware: kl_store::Version::parse("5.18.2").unwrap() };
-        let mut progress = Vec::new();
-        let installed = store_install_app(&fixture.launcher, ID, &device, |max| Policy {
+        let policy = |max| Policy {
             allowed_hosts: vec!["127.0.0.1".to_string()],
             max_bytes: max,
             timeout: Duration::from_secs(3),
             max_redirects: 0,
             allow_plain_http: true,
-        }, |stage, step| progress.push((stage.to_string(), step))).unwrap();
+        };
+        assert!(store_install_app(&fixture.launcher, ID, &device, policy, |_, _| {}).is_err());
+        assert!(!fixture.root.join("test-app/app.bin").exists());
+        let downloads = fixture.launcher.join("store/downloads");
+        assert_eq!(fs::metadata(downloads.join("test-app.part")).unwrap().len(), offset as u64);
+
+        let mut progress = Vec::new();
+        let installed = store_install_app(&fixture.launcher, ID, &device, policy, |stage, step| {
+            progress.push((stage.to_string(), step));
+        }).unwrap();
         server.join().unwrap();
         assert_eq!(installed, "1.0.0");
         assert_eq!(progress.first().unwrap(), &("Downloading".to_string(), Some(0)));
@@ -431,7 +456,7 @@ pub(crate) mod tests {
             ("Downloading".to_string(), Some(100)), ("Checking".to_string(), None), ("Installing".to_string(), None),
         ]);
         assert_eq!(fs::read(fixture.root.join("test-app/app.bin")).unwrap(), b"fixture application bytes");
-        assert!(!fixture.launcher.join("store/downloads/test-app.zip").exists());
+        assert_eq!(fs::read_dir(downloads).unwrap().count(), 0);
         let paths = kl_store::install::Paths::under(&fixture.root);
         assert_eq!(load_store(&fixture.launcher)[0].action_label(), "Installed");
         kl_store::install::remove(&paths, ID).unwrap();

@@ -17,6 +17,7 @@ use std::{
 };
 
 use kl_core::store::StoreEntry;
+use kl_core::store_open;
 use kl_core::ui::StoreRequirementReview;
 use kl_core::{Action, DeviceCmd, Input, Layout, Rotation, Screen, Settings, Status, Ui, Usb};
 use kl_kindle::{device, display::Display, input, log, profile, Ev};
@@ -70,6 +71,8 @@ fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, 
 fn main() {
     let dir = env_dir("KL_DIR", "/mnt/us/launcher");
     let run = env_dir("KL_RUN", "/var/tmp/kl-store");
+    let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
+    let open_supported = std::env::var(store_open::CAPABILITY).as_deref() == Ok("1");
     let _ = fs::create_dir_all(&run);
     crash_log::install(&dir.join("log-store.txt"));
     log(&format!("store v{} dir {}", env!("CARGO_PKG_VERSION"), dir.display()));
@@ -230,6 +233,11 @@ fn main() {
                         }
                         Err(e) => format!("The saved catalog could not be cleared. {e}"),
                     });
+                } else if let DeviceCmd::StoreOpen(index) = cmd {
+                    match request_open(ui.store.get(index), &dir, &documents, &run, status.usb, open_supported) {
+                        Ok(()) => process::exit(store_open::EXIT_OPEN_APP),
+                        Err(e) => ui.notice = Some(e),
+                    }
                 } else {
                     device_command(cmd, &mut ui, &dir, &root, &tx, &status);
                 }
@@ -239,6 +247,19 @@ fn main() {
             _ => {}
         }
     }
+}
+
+fn request_open(entry: Option<&StoreEntry>, dir: &Path, documents: &Path, run: &Path, usb: Usb, supported: bool) -> Result<(), String> {
+    let entry = entry.filter(|entry| entry.can_open()).ok_or("This app has no launcher entry.")?;
+    if usb == Usb::Drive {
+        return Err("Eject the Kindle drive before opening this app.".into());
+    }
+    if !supported {
+        return Err("Open this app from the launcher grid.".into());
+    }
+    store_open::installed_entry(dir, documents, &entry.id)
+        .and_then(|_| store_open::request(run, &entry.id))
+        .map_err(|e| format!("Could not open {}. {e}", entry.name))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -349,6 +370,32 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_open_requires_the_supervisor_and_an_installed_entry() {
+        let fixture = store::tests::Fixture::new();
+        let root = fixture.launcher.parent().unwrap();
+        let documents = root.join("documents");
+        let run = root.join("run");
+        fs::create_dir(&documents).unwrap();
+        fs::create_dir(&run).unwrap();
+        let listing = store::tests::listing("https://example.com/app.zip", "", 100);
+        let installed = kl_store::record::Installed {
+            id: listing.id.clone(), version: "1.0.0".into(), files: vec!["documents/Sample App.sh".into()],
+            ..kl_store::record::Installed::default()
+        };
+        let app = StoreEntry::from_listing(&listing, Some(&installed));
+        let mut record = kl_store::record::Record::new();
+        record.apps.insert(installed.id.clone(), installed);
+        kl_store::record::save(&fixture.launcher.join("store/installed.json"), &record).unwrap();
+
+        assert!(request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Unplugged, true).is_err());
+        fs::write(documents.join("Sample App.sh"), "#!/bin/sh\n").unwrap();
+        assert!(request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Unplugged, false).is_err());
+        assert!(request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Drive, true).is_err());
+        request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Unplugged, true).unwrap();
+        assert_eq!(store_open::take_request(&run).unwrap(), Some(listing.id));
+    }
 
     #[test]
     fn refresh_and_install_respect_connection_and_missing_selection() {
