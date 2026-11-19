@@ -49,8 +49,8 @@ The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
 
 ## Status
 
-The ARMHF candidate passed the Mac package and install simulation. The Oasis 3 is the target for the next
-hardware check. The package declares firmware 5.16.3 or later.
+Store 0.1.2 refreshed the live catalogue and installed ARMHF apps over Wi-Fi on a Kindle Oasis 3 running
+firmware 5.18.2. The package declares firmware 5.16.3 or later.
 
 <details>
 <summary><b>Build and test from source</b></summary>
