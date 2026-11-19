@@ -931,6 +931,7 @@ dependencies = [
  "libc",
  "primitive-net",
  "serde_json",
+ "zip",
 ]
 
 [[package]]
