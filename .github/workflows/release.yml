@@ -1,0 +1,19 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    # Switch to the versioned build workflow once its v1 tag is approved.
+    uses: DoanNguyenTrong/kindle-primitive-build/.github/workflows/package.yml@main
+    permissions:
+      contents: write
+    with:
+      id: primitive-store
+      dir: store
+      binary-crate: store-app
+      arches: armhf
+      firmware-min: "5.16.3"
+    secrets:
+      package-scan-patterns: ${{ secrets.PACKAGE_SCAN_PATTERNS }}
