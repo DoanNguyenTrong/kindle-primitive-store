@@ -50,9 +50,16 @@ fn set_orientation(run: &Path, rotation: Rotation) -> std::io::Result<()> {
 }
 
 fn catalog_is_stale(dir: &Path, now: SystemTime) -> bool {
-    match fs::metadata(dir.join("store/cache/index.json")).and_then(|meta| meta.modified()) {
-        Ok(modified) => now.duration_since(modified).is_ok_and(|elapsed| elapsed >= CATALOG_AGE),
-        Err(_) => true,
+    store::cache_directory(dir)
+        .and_then(|cache| fs::metadata(cache.join("index.json")).and_then(|meta| meta.modified()).ok())
+        .is_none_or(|modified| now.duration_since(modified).is_ok_and(|elapsed| elapsed >= CATALOG_AGE))
+}
+
+fn load_catalog_pictures(renderer: &mut kl_render::Renderer, dir: &Path) {
+    if let Some(cache) = store::cache_directory(dir) {
+        kl_render::load_store_pictures(renderer, &cache);
+    } else {
+        renderer.clear_store_artwork();
     }
 }
 
@@ -99,7 +106,7 @@ fn main() {
     let _ = fs::create_dir_all(&run);
     let log_dir = if storage.managed() { &run } else { &dir };
     crash_log::install(&log_dir.join("log-store.txt"));
-    log(&format!("store v{} dir {}", env!("CARGO_PKG_VERSION"), dir.display()));
+    log(&format!("store v{} profile {} dir {}", env!("CARGO_PKG_VERSION"), profile::ACTIVE.catalog_name, dir.display()));
     let root = dir.parent().unwrap_or(Path::new("/mnt/us")).to_path_buf();
 
     if let Err(error) = storage.begin_write() {
@@ -108,11 +115,17 @@ fn main() {
     }
 
     // An install that a power cut interrupted is finished or undone before the store reads what is installed.
-    match kl_store::install::recover(&kl_store::install::Paths::under(&root)) {
-        Ok(Some(what)) => log(&format!("store: {what}")),
-        Ok(None) => {}
-        Err(e) => log(&format!("store: cannot check an unfinished install: {e}")),
-    }
+    let recovery_problem = match kl_store::install::recover_with_hooks(&kl_store::install::Paths::under(&root), &kl_kindle::package_hooks::KindleHookRunner) {
+        Ok(Some(what)) => {
+            log(&format!("store: {what}"));
+            None
+        }
+        Ok(None) => None,
+        Err(e) => {
+            log(&format!("store: cannot check an unfinished install: {e}"));
+            Some(format!("Store recovery is pending. {e}"))
+        }
+    };
 
     let mut settings = Settings::parse(&fs::read_to_string(dir.join("settings.txt")).unwrap_or_default());
     if let Err(e) = set_orientation(&run, settings.rotation) {
@@ -130,7 +143,7 @@ fn main() {
     ui.store_daily_check = settings.store_daily_check;
     ui.store_collections = store::load_collections(&dir);
     ui.set_store(store::load_store(&dir));
-    kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+    load_catalog_pictures(&mut renderer, &dir);
     ui.open_store();
 
     let mut display = Display::open();
@@ -165,6 +178,9 @@ fn main() {
     }
     release_write(&mut storage);
     maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage);
+    if let Some(problem) = &recovery_problem {
+        ui.notice = Some(problem.clone());
+    }
     let mut next_check = Instant::now() + HOUR;
     display.show(renderer.draw(&ui, &status), &settings, true);
 
@@ -212,7 +228,7 @@ fn main() {
                 Action::Redraw { full: true }
             }
             Ev::StoreRefreshed { entries, message } => {
-                kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+                load_catalog_pictures(&mut renderer, &dir);
                 ui.store_collections = store::load_collections(&dir);
                 ui.update_store(entries);
                 ui.store_busy = false;
@@ -270,7 +286,7 @@ fn main() {
                             Ok(()) => {
                                 ui.store_collections.clear();
                                 ui.update_store(store::load_store(&dir));
-                                kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+                                load_catalog_pictures(&mut renderer, &dir);
                                 "Cleared the saved store catalog.".to_string()
                             }
                             Err(e) => format!("The saved catalog could not be cleared. {e}"),
@@ -278,7 +294,9 @@ fn main() {
                         release_write(&mut storage);
                     }
                 } else if let DeviceCmd::StoreOpen(index) = cmd {
-                    if status.usb == Usb::Drive {
+                    if let Some(problem) = &recovery_problem {
+                        ui.notice = Some(problem.clone());
+                    } else if status.usb == Usb::Drive {
                         ui.notice = Some("Eject the Kindle drive before opening this app.".into());
                     } else if begin_write(&mut storage, &mut ui) {
                         match request_open(ui.store.get(index), &dir, &documents, &run, status.usb, open_supported) {
@@ -343,6 +361,7 @@ fn store_command<'a>(cmd: DeviceCmd, status: &Status, entries: &'a [StoreEntry])
 
 fn close_install(ui: &mut Ui) {
     ui.store_installing = None;
+    ui.store_removing = false;
     ui.store_sheet = None;
     ui.store_requirements = None;
     ui.store_progress = None;
@@ -414,15 +433,10 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
             if !begin_write(storage, ui) {
                 return;
             }
-            ui.notice = Some(match kl_store::install::remove(&kl_store::install::Paths::under(root), &id) {
-                Ok(()) => {
-                    ui.update_store(store::load_store(dir));
-                    log(&format!("store: removed {id}"));
-                    format!("Removed {name} from this Kindle.")
-                }
-                Err(e) => format!("Could not remove {name}. {e}"),
-            });
-            release_write(storage);
+            ui.store_installing = Some(id.clone());
+            ui.store_removing = true;
+            ui.notice = Some(format!("Removing {name}…"));
+            store::start_store_remove(tx.clone(), dir.to_path_buf(), root.to_path_buf(), id, name);
             return;
         }
         Effect::None if cmd == DeviceCmd::StoreRefresh => ui.store_busy = false,

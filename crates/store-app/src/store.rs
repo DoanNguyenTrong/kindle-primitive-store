@@ -9,12 +9,15 @@ use std::{
 };
 
 use kl_core::store::{format_size, StoreEntry, LAUNCHER_ID};
+use kl_kindle::package_hooks::KindleHookRunner;
 use kl_kindle::{device, log, Ev};
 use kl_store::{
     catalog::{valid_app_id, Collection, CollectionIndex, Listing},
-    pipeline::Stage,
+    pipeline::{DownloadedPackage, Stage},
     record::Record,
+    refresh::{self, CachedCatalog},
     resolve::{self, Device},
+    signatures::TrustedKey,
     Version,
 };
 use primitive_net::Policy;
@@ -136,16 +139,20 @@ pub(crate) fn record(dir: &Path) -> Result<Record, String> {
 }
 
 pub(crate) fn read_listing(dir: &Path, id: &str) -> Result<Listing, String> {
-    if !valid_app_id(id) {
-        return Err("The store listing has an invalid app name.".to_string());
-    }
-    let listing_path = dir.join("store/cache/apps").join(format!("{id}.json"));
-    let listing_text = fs::read_to_string(listing_path).map_err(|_| "Refresh the store to find this app.".to_string())?;
-    let listing: Listing = serde_json::from_str(&listing_text).map_err(|e| e.to_string())?;
-    if listing.schema != 1 || listing.id != id {
-        return Err("The store listing does not match this app.".to_string());
-    }
-    Ok(listing)
+    local_catalog(dir, signing_key()?.as_ref())?.listing(id)
+}
+
+fn signing_key() -> Result<Option<TrustedKey>, String> {
+    device::store_catalog_key().map_err(|error| format!("The Store could not read its trusted signing key. {error}"))
+}
+
+fn local_catalog(dir: &Path, key: Option<&TrustedKey>) -> Result<CachedCatalog, String> {
+    refresh::cached_catalog(&dir.join("store/cache"), key)
+}
+
+pub fn cache_directory(dir: &Path) -> Option<PathBuf> {
+    let catalog = local_catalog(dir, signing_key().ok()?.as_ref()).ok()?;
+    Some(catalog.directory().to_path_buf())
 }
 
 fn store_install_app(
@@ -155,13 +162,14 @@ fn store_install_app(
     policy: impl FnOnce(u64) -> Policy,
     mut progress: impl FnMut(&str, Option<u8>),
 ) -> Result<String, String> {
-    let listing = read_listing(dir, id)?;
-    if listing.changes.hooks {
-        return Err("This app needs custom install steps. This store cannot run them.".to_string());
-    }
+    let key = signing_key()?;
+    let listing = local_catalog(dir, key.as_ref())?.listing(id)?;
     let version = kl_store::resolve::pick_version(&listing, device).map_err(|e| e.to_string())?;
     let asset = version.assets.get(&device.arch).ok_or("No package is available for this Kindle.")?;
     kl_store::verify::check_archive_size(asset.size).map_err(|e| e.to_string())?;
+    if let Some(key) = &key {
+        refresh::verify_asset_signature(&NetSource, key, id, &version.version, &device.arch, asset)?;
+    }
     let installed = record(dir)?;
     if let Some((required, version, _)) = resolve::missing_requirements(&version.requires, &|id| {
         installed.apps.get(id).and_then(|app| Version::parse(&app.version))
@@ -196,12 +204,27 @@ fn store_install_app(
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default();
-    kl_store::pipeline::install_downloaded_with_progress(&paths, &listing, device, &zip, &asset.url, &installed_at, |stage| {
+    let package = DownloadedPackage { paths: &paths, listing: &listing, device, zip: &zip, source_url: &asset.url, installed_at: &installed_at };
+    kl_store::pipeline::install_downloaded_reviewed(package, &KindleHookRunner, |stage| {
         progress(match stage {
             Stage::Checking => "Checking",
             Stage::Installing => "Installing",
         }, None);
     })
+}
+
+pub fn start_store_remove(tx: Sender<Ev>, dir: PathBuf, root: PathBuf, id: String, name: String) {
+    thread::spawn(move || {
+        let paths = kl_store::install::Paths::under(&root);
+        let result = std::panic::catch_unwind(|| kl_store::install::remove_with_hooks(&paths, &id, &KindleHookRunner));
+        let message = match result {
+            Ok(Ok(())) => format!("Removed {name} from this Kindle."),
+            Ok(Err(error)) => format!("Could not remove {name}. {error}"),
+            Err(_) => format!("Could not remove {name}. An internal error occurred."),
+        };
+        log(&format!("store: {message}"));
+        let _ = tx.send(Ev::StoreInstalled { entries: load_store(&dir), message });
+    });
 }
 
 fn check_space(available: u64, size: u64) -> Result<(), String> {
@@ -222,7 +245,10 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
         let cache = dir.join("store/cache");
         log("store: refresh started");
         // A panic must still end the refresh (the button waits for it), so it is caught and reported as an error.
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| kl_store::refresh::refresh(STORE_CATALOG, &cache, &NetSource)))
+        let outcome = std::panic::catch_unwind(|| {
+            let key = signing_key()?;
+            refresh::refresh_with_key(STORE_CATALOG, &cache, &NetSource, key.as_ref())
+        })
             .unwrap_or_else(|_| Err("an internal error".to_string()));
         let message = match outcome {
             Ok(report) => {
@@ -247,23 +273,22 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
 pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
     let mut installed = record(dir).unwrap_or_default();
     let device = device::store_device();
-    let read = fs::read_dir(dir.join("store/cache/apps"));
-    let mut entries: Vec<kl_core::store::StoreEntry> = read
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| fs::read_to_string(e.path()).ok())
-        .filter_map(|text| serde_json::from_str::<Listing>(&text).ok())
-        .filter(|listing| listing.schema == 1 && valid_app_id(&listing.id))
-        .map(|listing| {
+    let mut entries = Vec::new();
+    if let Ok(catalog) = signing_key().and_then(|key| local_catalog(dir, key.as_ref())) {
+        let files = fs::read_dir(catalog.directory().join("apps"));
+        for path in files.into_iter().flatten().flatten().map(|entry| entry.path()) {
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|name| name.to_str()).filter(|id| valid_app_id(id)) else { continue };
+            let Ok(listing) = catalog.listing(id) else { continue };
             let installed_app = installed.apps.remove(&listing.id);
-            match &device {
+            entries.push(match &device {
                 Some(device) => StoreEntry::for_device(&listing, installed_app.as_ref(), device),
                 None => StoreEntry::from_listing(&listing, installed_app.as_ref()),
-            }
-        })
-        .collect();
+            });
+        }
+    }
     entries.extend(installed.apps.values().map(StoreEntry::from_installed));
     if std::env::var(kl_core::store_open::CAPABILITY).as_deref() != Ok("1") {
         for entry in &mut entries {
@@ -275,7 +300,8 @@ pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
 }
 
 pub fn load_collections(dir: &Path) -> Vec<Collection> {
-    fs::read(dir.join("store/cache/collections.json"))
+    let Some(cache) = cache_directory(dir) else { return Vec::new() };
+    fs::read(cache.join("collections.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<CollectionIndex>(&bytes).ok())
         .filter(|index| index.schema == 1)
