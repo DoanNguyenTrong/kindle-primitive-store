@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Show catalog refresh progress and let Done stop a refresh safely before returning to Launcher.
+- Reuse the network connection for catalog requests and set a time limit on the refresh.
+
 ## 0.1.2
 
 - Load the catalog on Kindle firmware that keeps the optional signing-policy directory group-writable. A configured signing key still requires a protected path.

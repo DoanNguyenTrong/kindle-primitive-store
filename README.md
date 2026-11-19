@@ -34,6 +34,8 @@ The Store is a standalone Rust application that uses Primitive Launcher's fonts 
 ## Highlights
 
 - **Browse offline.** The Store saves the catalogue so you can browse it after a refresh without Wi-Fi.
+- **See refresh progress.** Store shows how many listings it has checked. Tap **Done** to stop a refresh and
+  return to Launcher.
 - **Check every download.** The Store verifies the archive size and SHA-256. An optional trusted key enables Ed25519
   verification for the catalogue and packages.
 - **Manage installed apps.** Open, update, and remove supported apps from their product pages. The Store keeps a
@@ -63,7 +65,7 @@ cargo test --locked --workspace
 cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.2 --arch armhf --stage build/stage --license LICENSE \
+  --version 0.1.3 --arch armhf --stage build/stage --license LICENSE \
   --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 

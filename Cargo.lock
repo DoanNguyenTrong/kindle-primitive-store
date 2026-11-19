@@ -490,7 +490,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "kl-core"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-store",
  "primitive-keyboard",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "kl-kindle"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "kl-store",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "kl-render"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "parley",
@@ -527,7 +527,7 @@ dependencies = [
 
 [[package]]
 name = "kl-store"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "http",
  "ring",
@@ -733,7 +733,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-device"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "libc",
@@ -742,7 +742,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-eink"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "kl-render",
@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "primitive-input"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "libc",
@@ -955,7 +955,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "store-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "kl-core",
  "kl-kindle",

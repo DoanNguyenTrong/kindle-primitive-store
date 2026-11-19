@@ -4,8 +4,9 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::Sender,
+    sync::{atomic::{AtomicBool, Ordering}, mpsc::Sender, Arc},
     thread,
+    time::{Duration, Instant},
 };
 
 use kl_core::store::{format_size, StoreEntry, LAUNCHER_ID};
@@ -24,6 +25,21 @@ use primitive_net::Policy;
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
 const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
+const CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
+const CATALOG_REFRESH_TIMEOUT: Duration = Duration::from_secs(75);
+
+#[derive(Clone, Default)]
+pub struct CatalogRefresh(Arc<AtomicBool>);
+
+impl CatalogRefresh {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    pub fn cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
 
 /// The store's catalog files over HTTPS, through the shared download code (only the store's hosts are reached).
 struct NetSource;
@@ -34,6 +50,42 @@ impl kl_store::refresh::Source for NetSource {
     }
     fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
         primitive_net::fetch_bytes(url, &primitive_net::Policy::store(max)).map_err(|e| e.to_string())
+    }
+}
+
+struct RefreshSource<'a> {
+    client: primitive_net::FetchClient,
+    cancel: &'a CatalogRefresh,
+    deadline: Instant,
+    tx: &'a Sender<Ev>,
+}
+
+impl refresh::Source for RefreshSource<'_> {
+    fn text(&self, url: &str) -> Result<String, String> {
+        self.check_refresh()?;
+        self.client.fetch_text(url, refresh::MAX_INDEX).map_err(|error| error.to_string())
+    }
+
+    fn bytes(&self, url: &str, max: u64) -> Result<Vec<u8>, String> {
+        self.check_refresh()?;
+        self.client.fetch_bytes(url, max).map_err(|error| error.to_string())
+    }
+
+    fn check_refresh(&self) -> Result<(), String> {
+        if self.cancel.cancelled() {
+            Err("the catalog refresh was stopped".into())
+        } else if Instant::now() >= self.deadline {
+            Err("the catalog refresh took too long. Check Wi-Fi and try again.".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn report_refresh(&self, completed: usize, total: usize) {
+        let _ = self.tx.send(Ev::StoreProgress {
+            message: format!("Refreshing catalog… {completed} of {total} listings checked."),
+            percent: None,
+        });
     }
 }
 
@@ -240,14 +292,22 @@ fn check_space(available: u64, size: u64) -> Result<(), String> {
 
 /// Refresh the store's catalog cache on a thread, then send the store's entries and a message. The screen is not held
 /// while the files come in.
-pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
+pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) -> CatalogRefresh {
+    let refresh = CatalogRefresh::default();
+    let cancel = refresh.clone();
     thread::spawn(move || {
         let cache = dir.join("store/cache");
         log("store: refresh started");
         // A panic must still end the refresh (the button waits for it), so it is caught and reported as an error.
         let outcome = std::panic::catch_unwind(|| {
+            let mut policy = Policy::store(refresh::MAX_INDEX.max(refresh::MAX_PICTURE));
+            policy.timeout = CATALOG_REQUEST_TIMEOUT;
+            let source = RefreshSource {
+                client: primitive_net::FetchClient::new(policy), cancel: &cancel,
+                deadline: Instant::now() + CATALOG_REFRESH_TIMEOUT, tx: &tx,
+            };
             let key = signing_key()?;
-            refresh::refresh_with_key(STORE_CATALOG, &cache, &NetSource, key.as_ref())
+            refresh::refresh_with_key(STORE_CATALOG, &cache, &source, key.as_ref())
         })
             .unwrap_or_else(|_| Err("an internal error".to_string()));
         let message = match outcome {
@@ -264,9 +324,10 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
                 format!("The store could not be updated: {e}")
             }
         };
-        let entries = load_store(&dir);
+        let entries = if cancel.cancelled() { Vec::new() } else { load_store(&dir) };
         let _ = tx.send(Ev::StoreRefreshed { entries, message });
     });
+    refresh
 }
 
 /// The store's entries: one per listing in the catalog cache (`store/cache/apps/*.json`), with what is installed.

@@ -83,17 +83,40 @@ fn release_write(storage: &mut StorageLease) {
     }
 }
 
-fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, status: &Status, storage: &mut StorageLease) -> bool {
+fn request_exit(ui: &mut Ui, storage: &StorageLease, refresh: Option<&store::CatalogRefresh>) -> bool {
+    if !storage.writing() {
+        return true;
+    }
+    ui.screen = Screen::Store;
+    if let Some(refresh) = refresh {
+        refresh.cancel();
+        ui.notice = None;
+        ui.store_progress = Some("Stopping the catalog refresh…".into());
+    } else {
+        ui.notice = Some("Wait for the current Store change to finish.".into());
+    }
+    false
+}
+
+fn start_catalog_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, storage: &mut StorageLease) -> Option<store::CatalogRefresh> {
+    ui.store_busy = begin_write(storage, ui);
+    if !ui.store_busy {
+        return None;
+    }
+    ui.notice = None;
+    ui.store_progress = Some("Checking the catalog…".into());
+    ui.store_progress_percent = None;
+    Some(store::start_store_refresh(tx.clone(), dir.to_path_buf()))
+}
+
+fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, status: &Status, storage: &mut StorageLease,
+    refresh: &mut Option<store::CatalogRefresh>) -> bool {
     if !settings.store_daily_check || ui.store_busy || ui.store_installing.is_some() || ui.store_batch_running
         || !connected(status) || !catalog_is_stale(dir, SystemTime::now())
     {
         return false;
     }
-    if begin_write(storage, ui) {
-        ui.store_busy = true;
-        ui.notice = Some("Updating the store…".to_string());
-        store::start_store_refresh(tx.clone(), dir.to_path_buf());
-    }
+    *refresh = start_catalog_refresh(ui, dir, tx, storage);
     true
 }
 
@@ -177,7 +200,8 @@ fn main() {
         });
     }
     release_write(&mut storage);
-    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage);
+    let mut refresh = None;
+    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh);
     if let Some(problem) = &recovery_problem {
         ui.notice = Some(problem.clone());
     }
@@ -205,7 +229,7 @@ fn main() {
                 let timed_refresh = if Instant::now() >= next_check {
                     next_check = Instant::now() + HOUR;
                     status = device::status(&settings);
-                    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage)
+                    maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh)
                 } else {
                     false
                 };
@@ -228,10 +252,16 @@ fn main() {
                 Action::Redraw { full: true }
             }
             Ev::StoreRefreshed { entries, message } => {
+                if refresh.take().is_some_and(|refresh| refresh.cancelled()) {
+                    release_write(&mut storage);
+                    log("store: done after stopping the catalog refresh");
+                    break;
+                }
                 load_catalog_pictures(&mut renderer, &dir);
                 ui.store_collections = store::load_collections(&dir);
                 ui.update_store(entries);
                 ui.store_busy = false;
+                ui.store_progress = None;
                 ui.notice = Some(message);
                 release_write(&mut storage);
                 Action::Redraw { full: false }
@@ -244,17 +274,19 @@ fn main() {
                 Action::Redraw { full: true }
             }
             Ev::StoreProgress { message, percent } => {
-                ui.store_progress = Some(message);
-                ui.store_progress_percent = percent;
-                Action::Redraw { full: false }
+                if refresh.as_ref().is_some_and(store::CatalogRefresh::cancelled) {
+                    Action::None
+                } else {
+                    ui.store_progress = Some(message);
+                    ui.store_progress_percent = percent;
+                    Action::Redraw { full: false }
+                }
             }
             _ => Action::None,
         };
         // Done (back to the home screen) ends the store: the launcher takes the screen again.
         if ui.screen == Screen::Home {
-            if storage.writing() {
-                ui.screen = Screen::Store;
-                ui.notice = Some("Wait for the current Store change to finish.".into());
+            if !request_exit(&mut ui, &storage, refresh.as_ref()) {
                 display.show(renderer.draw(&ui, &status), &settings, false);
                 continue;
             }
@@ -306,8 +338,8 @@ fn main() {
                         }
                         release_write(&mut storage);
                     }
-                } else {
-                    device_command(cmd, &mut ui, &dir, &root, &tx, &status, &mut storage);
+                } else if let Some(started) = device_command(cmd, &mut ui, &dir, &root, &tx, &status, &mut storage) {
+                    refresh = Some(started);
                 }
                 let full = closed_modal && ui.store_sheet.is_none() && !ui.store_batch_confirm;
                 display.show(renderer.draw(&ui, &status), &settings, full);
@@ -380,15 +412,13 @@ fn save_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
 }
 
 /// The store's own commands, run off the screen where they take time.
-fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sender<Ev>, status: &Status, storage: &mut StorageLease) {
+fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sender<Ev>, status: &Status,
+    storage: &mut StorageLease) -> Option<store::CatalogRefresh> {
     let (notice, effect) = store_command(cmd, status, &ui.store);
     match effect {
         Effect::Refresh => {
-            if !begin_write(storage, ui) {
-                ui.store_busy = false;
-                return;
-            }
-            store::start_store_refresh(tx.clone(), dir.to_path_buf());
+            log(&format!("store: refresh requested (wifi on: {}, state: {})", status.wifi_on, status.wifi_state));
+            return start_catalog_refresh(ui, dir, tx, storage);
         }
         Effect::Install(entry) => {
             let planned = device::store_device()
@@ -415,29 +445,29 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
                     ui.notice = Some(error);
                 }
             }
-            return;
+            return None;
         }
         Effect::UpdateAll => {
             if !begin_write(storage, ui) {
                 close_install(ui);
-                return;
+                return None;
             }
             let updates = ui.store_pending_updates().map(|entry| (entry.id.clone(), entry.name.clone())).collect();
             ui.store_progress = notice;
             store::start_store_update_all(tx.clone(), dir.to_path_buf(), updates);
-            return;
+            return None;
         }
         Effect::Remove(entry) => {
             let id = entry.id.clone();
             let name = entry.name.clone();
             if !begin_write(storage, ui) {
-                return;
+                return None;
             }
             ui.store_installing = Some(id.clone());
             ui.store_removing = true;
             ui.notice = Some(format!("Removing {name}…"));
             store::start_store_remove(tx.clone(), dir.to_path_buf(), root.to_path_buf(), id, name);
-            return;
+            return None;
         }
         Effect::None if cmd == DeviceCmd::StoreRefresh => ui.store_busy = false,
         Effect::None if matches!(cmd, DeviceCmd::StoreInstall(_) | DeviceCmd::StoreUpdateAll) => close_install(ui),
@@ -447,11 +477,33 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
         log(&format!("store: refresh requested (wifi on: {}, state: {})", status.wifi_on, status.wifi_state));
     }
     ui.notice = notice;
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_requests_refresh_cancellation_without_interrupting_package_writes() {
+        let mut ui = Ui::new(Vec::new(), Layout::new(W, H, 4, 5));
+        let mut storage = StorageLease::new(Path::new("/unused"), false);
+        assert!(request_exit(&mut ui, &storage, None));
+
+        storage.begin_write().unwrap();
+        assert!(!request_exit(&mut ui, &storage, None));
+        assert!(storage.writing());
+        assert_eq!(ui.screen, Screen::Store);
+
+        let refresh = store::CatalogRefresh::default();
+        assert!(!request_exit(&mut ui, &storage, Some(&refresh)));
+        assert!(refresh.cancelled());
+        assert!(storage.writing());
+        assert_eq!(ui.store_progress.as_deref(), Some("Stopping the catalog refresh…"));
+
+        storage.finish_write().unwrap();
+        assert!(request_exit(&mut ui, &storage, None));
+    }
 
     #[test]
     fn product_open_requires_the_supervisor_and_an_installed_entry() {
