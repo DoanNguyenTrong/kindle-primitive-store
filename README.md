@@ -63,7 +63,7 @@ cargo test --locked --workspace
 cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.1 --arch armhf --stage build/stage --license LICENSE \
+  --version 0.1.2 --arch armhf --stage build/stage --license LICENSE \
   --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 

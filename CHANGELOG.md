@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Load the catalog on Kindle firmware that keeps the optional signing-policy directory group-writable. A configured signing key still requires a protected path.
+
 ## 0.1.1
 
 - Display the standalone app as Store in the Kindle library and Launcher grid.
