@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["crates/store-app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+
+# The shared kit (tools) takes its versions from the tools workspace: keep these equal to it.
+[workspace.dependencies]
+# Same pinned versions as Primitive Browser, so the offline crate cache has them.
+vello_cpu = { version = "0.3", default-features = false, features = ["std", "text", "u8_pipeline"] }
+parley = { version = "=0.12.0", default-features = false, features = ["std"] }
+png = "0.17"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+panic = "unwind"
