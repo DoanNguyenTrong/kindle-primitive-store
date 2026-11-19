@@ -2,7 +2,7 @@
 
 # Store
 
-**Find and manage apps on a jailbroken Kindle.**
+**Find and manage PrimitiveOS apps on your Kindle.**
 
 [**Install guide**](INSTALL.md) · [**Changelog**](CHANGELOG.md) · [**Licence**](#licence)
 
@@ -43,9 +43,8 @@ The Store is a standalone Rust application that uses Primitive Launcher's fonts 
 
 ## Quick start
 
-Set up Primitive Launcher on a jailbroken Kindle. Install a Store package over USB, or use the Launcher Store tile
-when a Store release is available in its catalogue. Open **Store** in the Launcher grid and use **Refresh**
-to fetch the catalogue. [Install guide](INSTALL.md)
+After setting up PrimitiveOS with Primitive Launcher, open **Store** from the Launcher grid and follow the
+installation prompt if it appears. Tap **Refresh** to fetch the catalogue. [Install guide](INSTALL.md)
 
 The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
 
