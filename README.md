@@ -23,8 +23,8 @@ The Store is a standalone Rust application that uses Primitive Launcher's fonts 
     <td align="center"><img src="docs/images/store-search-keyboard.png" alt="Search for Browser with the on-screen keyboard" width="260"><br><sub>Find an app by name</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/store-app.png" alt="Primitive Blocks app page showing version, size, and firmware" width="260"><br><sub>Read an app's details</sub></td>
-    <td align="center"><img src="docs/images/store-install-sheet.png" alt="Install confirmation showing what Primitive Blocks changes" width="260"><br><sub>Review changes before installing</sub></td>
+    <td align="center"><img src="docs/images/store-app.png" alt="Blocks app page showing version, size, and firmware" width="260"><br><sub>Read an app's details</sub></td>
+    <td align="center"><img src="docs/images/store-install-sheet.png" alt="Install confirmation showing what Blocks changes" width="260"><br><sub>Review changes before installing</sub></td>
     <td align="center"><img src="docs/images/store-updates.png" alt="Updates tab with one update ready and an Update all button" width="260"><br><sub>See what can be updated</sub></td>
   </tr>
 </table>
@@ -80,5 +80,3 @@ Copyright (C) 2026 Doan Nguyen.
 - **Original documentation and pictures**, including this README and its screenshots, are licensed under
   CC BY-NC-SA 4.0. [Documentation and pictures licence](LICENSE-DOCS)
 - **Shared Tools** is available under AGPL-3.0 or PolyForm Noncommercial 1.0.0. [Shared Tools](tools/)
-- **KOReader artwork** in the catalogue screenshots is credited to the KOReader project and retains its own terms.
-  [KOReader](https://github.com/koreader/koreader)
