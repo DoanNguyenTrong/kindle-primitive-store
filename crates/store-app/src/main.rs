@@ -4,6 +4,7 @@
 //! `/mnt/us/launcher/store`), so an app installed through the store is the same app the launcher shows.
 
 mod crash_log;
+mod requirements;
 mod store;
 
 use std::{
@@ -16,6 +17,7 @@ use std::{
 };
 
 use kl_core::store::StoreEntry;
+use kl_core::ui::StoreRequirementReview;
 use kl_core::{Action, DeviceCmd, Input, Layout, Rotation, Screen, Settings, Status, Ui, Usb};
 use kl_kindle::{device, display::Display, input, log, profile, Ev};
 use kl_render::Renderer;
@@ -50,12 +52,12 @@ fn catalog_is_stale(dir: &Path, now: SystemTime) -> bool {
 }
 
 fn connected(status: &Status) -> bool {
-    status.wifi_on && status.wifi_state == "connected"
+    status.wifi_on && status.wifi_state == "connected" && status.usb != Usb::Drive
 }
 
 fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, status: &Status) -> bool {
-    if !settings.store_daily_check || ui.store_busy || ui.store_installing.is_some()
-        || !connected(status) || status.usb == Usb::Drive || !catalog_is_stale(dir, SystemTime::now())
+    if !settings.store_daily_check || ui.store_busy || ui.store_installing.is_some() || ui.store_batch_running
+        || !connected(status) || !catalog_is_stale(dir, SystemTime::now())
     {
         return false;
     }
@@ -93,6 +95,8 @@ fn main() {
     };
     let mut ui = Ui::new(Vec::new(), Layout::new(W, H, 4, 5));
     ui.version = env!("CARGO_PKG_VERSION").to_string();
+    ui.store_daily_check = settings.store_daily_check;
+    ui.store_collections = store::load_collections(&dir);
     ui.set_store(store::load_store(&dir));
     kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
     ui.open_store();
@@ -176,6 +180,7 @@ fn main() {
             }
             Ev::StoreRefreshed { entries, message } => {
                 kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+                ui.store_collections = store::load_collections(&dir);
                 ui.update_store(entries);
                 ui.store_busy = false;
                 ui.notice = Some(message);
@@ -204,8 +209,32 @@ fn main() {
             Action::Redraw { full } => display.show(renderer.draw(&ui, &status), &settings, full),
             Action::Device(cmd) => {
                 status = device::status(&settings);
-                device_command(cmd, &mut ui, &dir, &root, &tx, &status);
-                display.show(renderer.draw(&ui, &status), &settings, false);
+                let closed_modal = ui.store_sheet.is_some() || ui.store_batch_confirm;
+                if cmd == DeviceCmd::StoreToggleDailyCheck {
+                    let mut updated = settings.clone();
+                    updated.store_daily_check = !settings.store_daily_check;
+                    match save_settings(&dir, &updated) {
+                        Ok(()) => {
+                            ui.store_daily_check = updated.store_daily_check;
+                            settings = updated;
+                        }
+                        Err(e) => ui.notice = Some(format!("The store settings could not be saved. {e}")),
+                    }
+                } else if cmd == DeviceCmd::StoreClearCache {
+                    ui.notice = Some(match store::clear_cache(&dir) {
+                        Ok(()) => {
+                            ui.store_collections.clear();
+                            ui.update_store(store::load_store(&dir));
+                            kl_render::load_store_pictures(&mut renderer, &dir.join("store/cache"));
+                            "Cleared the saved store catalog.".to_string()
+                        }
+                        Err(e) => format!("The saved catalog could not be cleared. {e}"),
+                    });
+                } else {
+                    device_command(cmd, &mut ui, &dir, &root, &tx, &status);
+                }
+                let full = closed_modal && ui.store_sheet.is_none() && !ui.store_batch_confirm;
+                display.show(renderer.draw(&ui, &status), &settings, full);
             }
             _ => {}
         }
@@ -217,6 +246,7 @@ enum Effect<'a> {
     None,
     Refresh,
     Install(&'a StoreEntry),
+    UpdateAll,
     Remove(&'a StoreEntry),
 }
 
@@ -225,10 +255,13 @@ fn store_command<'a>(cmd: DeviceCmd, status: &Status, entries: &'a [StoreEntry])
         DeviceCmd::StoreRefresh if connected(status) => (Some("Updating the store…".to_string()), Effect::Refresh),
         DeviceCmd::StoreRefresh => (Some("Connect to Wi-Fi to update the store.".to_string()), Effect::None),
         DeviceCmd::StoreInstall(index) => match entries.get(index) {
+            Some(entry) if !entry.can_install() => (Some(entry.status_line()), Effect::None),
             Some(entry) if connected(status) => (Some(format!("Preparing {}…", entry.name)), Effect::Install(entry)),
             Some(_) => (Some("Connect to Wi-Fi to install from the store.".to_string()), Effect::None),
             None => (Some("This app could not be found in the store.".to_string()), Effect::None),
         },
+        DeviceCmd::StoreUpdateAll if connected(status) => (Some("Preparing updates…".to_string()), Effect::UpdateAll),
+        DeviceCmd::StoreUpdateAll => (Some("Connect to Wi-Fi to update apps.".to_string()), Effect::None),
         DeviceCmd::StoreRemove(index) => match entries.get(index).filter(|entry| entry.can_remove()) {
             Some(entry) => (None, Effect::Remove(entry)),
             None => (Some("This app cannot be removed from the store.".to_string()), Effect::None),
@@ -240,8 +273,20 @@ fn store_command<'a>(cmd: DeviceCmd, status: &Status, entries: &'a [StoreEntry])
 fn close_install(ui: &mut Ui) {
     ui.store_installing = None;
     ui.store_sheet = None;
+    ui.store_requirements = None;
     ui.store_progress = None;
     ui.store_progress_percent = None;
+    ui.store_batch_confirm = false;
+    ui.store_batch_running = false;
+}
+
+fn save_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
+    use std::io::Write;
+    let pending = dir.join("settings.store.tmp");
+    let mut file = fs::File::create(&pending)?;
+    file.write_all(settings.to_text().as_bytes())?;
+    file.sync_all()?;
+    fs::rename(pending, dir.join("settings.txt"))
 }
 
 /// The store's own commands, run off the screen where they take time.
@@ -250,8 +295,32 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
     match effect {
         Effect::Refresh => store::start_store_refresh(tx.clone(), dir.to_path_buf()),
         Effect::Install(entry) => {
+            let planned = device::store_device()
+                .ok_or_else(|| "The Kindle's firmware version could not be read.".to_string())
+                .and_then(|device| requirements::installation_plan(dir, &entry.id, &device));
+            match planned {
+                Ok(plan) => {
+                    let (_, required) = plan.split_last().expect("a plan includes the requested app");
+                    let reviewed = ui.store_requirements.as_ref().is_some_and(|review| review.apps == required);
+                    if required.is_empty() || reviewed {
+                        ui.store_progress = notice;
+                        store::start_store_install(tx.clone(), dir.to_path_buf(), plan);
+                    } else {
+                        ui.store_requirements = Some(StoreRequirementReview { apps: required.to_vec(), page: 0 });
+                        ui.store_installing = None;
+                    }
+                }
+                Err(error) => {
+                    close_install(ui);
+                    ui.notice = Some(error);
+                }
+            }
+            return;
+        }
+        Effect::UpdateAll => {
+            let updates = ui.store_pending_updates().map(|entry| (entry.id.clone(), entry.name.clone())).collect();
             ui.store_progress = notice;
-            store::start_store_install(tx.clone(), dir.to_path_buf(), entry.id.clone(), entry.name.clone());
+            store::start_store_update_all(tx.clone(), dir.to_path_buf(), updates);
             return;
         }
         Effect::Remove(entry) => {
@@ -268,7 +337,7 @@ fn device_command(cmd: DeviceCmd, ui: &mut Ui, dir: &Path, root: &Path, tx: &Sen
             return;
         }
         Effect::None if cmd == DeviceCmd::StoreRefresh => ui.store_busy = false,
-        Effect::None if matches!(cmd, DeviceCmd::StoreInstall(_)) => close_install(ui),
+        Effect::None if matches!(cmd, DeviceCmd::StoreInstall(_) | DeviceCmd::StoreUpdateAll) => close_install(ui),
         Effect::None => {}
     }
     if cmd == DeviceCmd::StoreRefresh {

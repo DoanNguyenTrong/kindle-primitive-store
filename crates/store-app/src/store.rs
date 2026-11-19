@@ -8,9 +8,15 @@ use std::{
     thread,
 };
 
-use kl_core::store::format_size;
+use kl_core::store::{format_size, StoreEntry, LAUNCHER_ID};
 use kl_kindle::{device, log, Ev};
-use kl_store::{catalog::Listing, pipeline::Stage, resolve::Device};
+use kl_store::{
+    catalog::{valid_app_id, Collection, CollectionIndex, Listing},
+    pipeline::Stage,
+    record::Record,
+    resolve::{self, Device},
+    Version,
+};
 use primitive_net::Policy;
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
@@ -30,17 +36,29 @@ impl kl_store::refresh::Source for NetSource {
 
 /// Install an app from the store on a thread: download its package for this Kindle, check it, install it, and tell the
 /// store and the library. The download is refused when Wi-Fi is not connected (the caller checks).
-pub fn start_store_install(tx: Sender<Ev>, dir: PathBuf, id: String, name: String) {
+pub fn start_store_install(tx: Sender<Ev>, dir: PathBuf, mut plan: Vec<StoreEntry>) {
+    let Some(target) = plan.pop() else { return };
     thread::spawn(move || {
+        let StoreEntry { id, name, .. } = target;
         log(&format!("store: install of {id} started"));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if id == LAUNCHER_ID && std::env::var_os("KL_LAUNCHER_SELF_UPDATE").as_deref() != Some(std::ffi::OsStr::new("1")) {
+                return Err("This launcher needs a manual update before it can update through the store.".to_string());
+            }
             let kindle = device::store_device().ok_or("The Kindle's firmware version could not be read.")?;
+            for required in plan {
+                store_install_app(&dir, &required.id, &kindle, Policy::store, |stage, percent| {
+                    let _ = tx.send(Ev::StoreProgress { message: format!("{stage} {}…", required.name), percent });
+                }).map_err(|error| format!("Required app {} could not be installed. {error}", required.name))?;
+            }
             store_install_app(&dir, &id, &kindle, Policy::store, |stage, percent| {
+                let stage = if id == LAUNCHER_ID && stage == "Installing" { "Preparing" } else { stage };
                 let _ = tx.send(Ev::StoreProgress { message: format!("{stage} {name}…"), percent });
             })
         }))
         .unwrap_or_else(|_| Err("An internal error occurred.".to_string()));
         let message = match outcome {
+            Ok(_) if id == LAUNCHER_ID => "Launcher update is ready. Tap Done to restart the launcher.".to_string(),
             Ok(version) => format!("Installed {name} {version}."),
             Err(e) => format!("Could not install {name}. {e}"),
         };
@@ -50,6 +68,86 @@ pub fn start_store_install(tx: Sender<Ev>, dir: PathBuf, id: String, name: Strin
     });
 }
 
+pub fn start_store_update_all(tx: Sender<Ev>, dir: PathBuf, apps: Vec<(String, String)>) {
+    thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let kindle = device::store_device().ok_or("The Kindle's firmware version could not be read.")?;
+            let record = record(&dir)?;
+            let listings = apps.iter().map(|(id, _)| read_listing(&dir, id)).collect::<Result<Vec<_>, _>>()?;
+            let order = update_order(&listings, &record, &kindle)?;
+            let mut updated = 0;
+            let mut failures = Vec::new();
+            for index in order {
+                let (id, name) = &apps[index];
+                let result = store_install_app(&dir, id, &kindle, Policy::store, |stage, percent| {
+                    let _ = tx.send(Ev::StoreProgress { message: format!("{stage} {name}…"), percent });
+                });
+                match result {
+                    Ok(_) => updated += 1,
+                    Err(error) => {
+                        log(&format!("store: could not update {id}: {error}"));
+                        failures.push(format!("{name}. {error}"));
+                    }
+                }
+            }
+            let total = apps.len();
+            Ok::<_, String>(match failures.first() {
+                None => format!("Updated {updated} apps."),
+                Some(first) => format!("Updated {updated} of {total} apps. Could not update {first}"),
+            })
+        })).unwrap_or_else(|_| Err("An internal error occurred.".to_string()));
+        let message = outcome.unwrap_or_else(|error| format!("Could not update the apps. {error}"));
+        let _ = tx.send(Ev::StoreInstalled { entries: load_store(&dir), message });
+    });
+}
+
+/// Orders updates whose requirements are satisfied by the installed or previously planned versions.
+fn update_order(listings: &[Listing], installed: &Record, device: &Device) -> Result<Vec<usize>, String> {
+    use std::collections::BTreeMap;
+
+    let mut available: BTreeMap<&str, Version> = installed.apps.values()
+        .filter_map(|app| Version::parse(&app.version).map(|version| (app.id.as_str(), version)))
+        .collect();
+    let mut pending = listings.iter().enumerate()
+        .map(|(i, listing)| resolve::pick_version(listing, device)
+            .map(|version| (i, listing.id.as_str(), version))
+            .map_err(|error| format!("{}: {error}.", listing.name)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut order = Vec::new();
+    while !pending.is_empty() {
+        let ready = pending.iter().position(|(_, _, version)| {
+            resolve::missing_requirements(&version.requires, &|id| available.get(id).cloned()).is_empty()
+        });
+        let Some(ready) = ready else {
+            let names = pending.iter().map(|(i, _, _)| listings[*i].name.as_str()).collect::<Vec<_>>();
+            return Err(format!("Check the app requirements for {}.", names.join(", ")));
+        };
+        let (i, id, version) = pending.remove(ready);
+        let version = Version::parse(&version.version).ok_or("An update has an invalid version number.")?;
+        available.insert(id, version);
+        order.push(i);
+    }
+    Ok(order)
+}
+
+pub(crate) fn record(dir: &Path) -> Result<Record, String> {
+    kl_store::record::load(&dir.join("store/installed.json"))
+        .map_err(|e| format!("The store could not read the list of installed apps. {e}"))
+}
+
+pub(crate) fn read_listing(dir: &Path, id: &str) -> Result<Listing, String> {
+    if !valid_app_id(id) {
+        return Err("The store listing has an invalid app name.".to_string());
+    }
+    let listing_path = dir.join("store/cache/apps").join(format!("{id}.json"));
+    let listing_text = fs::read_to_string(listing_path).map_err(|_| "Refresh the store to find this app.".to_string())?;
+    let listing: Listing = serde_json::from_str(&listing_text).map_err(|e| e.to_string())?;
+    if listing.schema != 1 || listing.id != id {
+        return Err("The store listing does not match this app.".to_string());
+    }
+    Ok(listing)
+}
+
 fn store_install_app(
     dir: &Path,
     id: &str,
@@ -57,18 +155,18 @@ fn store_install_app(
     policy: impl FnOnce(u64) -> Policy,
     mut progress: impl FnMut(&str, Option<u8>),
 ) -> Result<String, String> {
-    if !safe_id(id) {
-        return Err("The store listing has an invalid app name.".to_string());
-    }
-    let listing_path = dir.join("store/cache/apps").join(format!("{id}.json"));
-    let listing_text = fs::read_to_string(listing_path)
-        .map_err(|_| "Refresh the store to find this app.".to_string())?;
-    let listing: Listing = serde_json::from_str(&listing_text).map_err(|e| e.to_string())?;
-    if listing.schema != 1 || listing.id != id {
-        return Err("The store listing does not match this app.".to_string());
+    let listing = read_listing(dir, id)?;
+    if listing.changes.hooks {
+        return Err("This app needs custom install steps. This store cannot run them.".to_string());
     }
     let version = kl_store::resolve::pick_version(&listing, device).map_err(|e| e.to_string())?;
     let asset = version.assets.get(&device.arch).ok_or("No package is available for this Kindle.")?;
+    let installed = record(dir)?;
+    if let Some((required, version, _)) = resolve::missing_requirements(&version.requires, &|id| {
+        installed.apps.get(id).and_then(|app| Version::parse(&app.version))
+    }).first() {
+        return Err(format!("Install {required} {version} first."));
+    }
     let root = dir.parent().unwrap_or(Path::new("/mnt/us"));
     let paths = kl_store::install::Paths::under(root);
     let available = device::available_storage_bytes(root).map_err(|_| "Free space on this Kindle could not be checked.")?;
@@ -86,8 +184,7 @@ fn store_install_app(
             progress("Downloading", Some(step * 10));
         }
     }).map_err(|e| match e {
-        primitive_net::NetError::Transport(detail)
-            if detail.to_lowercase().contains("timed out") || detail.to_lowercase().contains("timeout") => {
+        primitive_net::NetError::Timeout => {
             "The download took too long. Check Wi-Fi and try again.".to_string()
         }
         _ => e.to_string(),
@@ -104,11 +201,6 @@ fn store_install_app(
             Stage::Installing => "Installing",
         }, None);
     })
-}
-
-fn safe_id(id: &str) -> bool {
-    (2..=40).contains(&id.len()) && id.as_bytes()[0] != b'-'
-        && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn check_space(available: u64, size: u64) -> Result<(), String> {
@@ -152,20 +244,44 @@ pub fn start_store_refresh(tx: Sender<Ev>, dir: PathBuf) {
 
 /// The store's entries: one per listing in the catalog cache (`store/cache/apps/*.json`), with what is installed.
 pub fn load_store(dir: &Path) -> Vec<kl_core::store::StoreEntry> {
-    let record = kl_store::record::load(&dir.join("store/installed.json")).unwrap_or_default();
-    let Ok(read) = fs::read_dir(dir.join("store/cache/apps")) else {
-        return Vec::new();
-    };
+    let mut installed = record(dir).unwrap_or_default();
+    let device = device::store_device();
+    let read = fs::read_dir(dir.join("store/cache/apps"));
     let mut entries: Vec<kl_core::store::StoreEntry> = read
+        .into_iter()
+        .flatten()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| fs::read_to_string(e.path()).ok())
         .filter_map(|text| serde_json::from_str::<Listing>(&text).ok())
-        .filter(|listing| listing.schema == 1 && safe_id(&listing.id))
-        .map(|listing| kl_core::store::StoreEntry::from_listing(&listing, record.apps.get(&listing.id)))
+        .filter(|listing| listing.schema == 1 && valid_app_id(&listing.id))
+        .map(|listing| {
+            let installed_app = installed.apps.remove(&listing.id);
+            match &device {
+                Some(device) => StoreEntry::for_device(&listing, installed_app.as_ref(), device),
+                None => StoreEntry::from_listing(&listing, installed_app.as_ref()),
+            }
+        })
         .collect();
+    entries.extend(installed.apps.values().map(StoreEntry::from_installed));
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     entries
+}
+
+pub fn load_collections(dir: &Path) -> Vec<Collection> {
+    fs::read(dir.join("store/cache/collections.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<CollectionIndex>(&bytes).ok())
+        .filter(|index| index.schema == 1)
+        .map(|index| index.collections)
+        .unwrap_or_default()
+}
+
+pub fn clear_cache(dir: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(dir.join("store/cache")) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -195,9 +311,9 @@ pub(crate) mod tests {
             Self { root, launcher }
         }
 
-        fn write_listing(&self, listing: &Listing) {
+        pub(crate) fn write_listing(&self, listing: &Listing) {
             fs::write(
-                self.launcher.join("store/cache/apps").join(format!("{ID}.json")),
+                self.launcher.join("store/cache/apps").join(format!("{}.json", listing.id)),
                 serde_json::to_vec(listing).unwrap(),
             ).unwrap();
         }
@@ -244,6 +360,28 @@ pub(crate) mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].action_label(), "Update");
         assert!(entries[0].can_remove());
+        clear_cache(&fixture.launcher).unwrap();
+        clear_cache(&fixture.launcher).unwrap();
+        let preserved = load_store(&fixture.launcher);
+        assert_eq!(preserved[0].action_label(), "Installed");
+        assert!(preserved[0].can_remove());
+    }
+
+    #[test]
+    fn plans_prerequisites_before_updates_that_need_them() {
+        use kl_store::record::Installed;
+
+        let mut app = listing("https://example.com/app.zip", "", 100);
+        app.versions[0].requires.insert("required-app".to_string(), ">=1.0.0".to_string());
+        let mut dependency = listing("https://example.com/dependency.zip", "", 100);
+        dependency.id = "required-app".to_string();
+        let mut installed = Record::new();
+        installed.apps.insert(dependency.id.clone(), Installed {
+            id: dependency.id.clone(), version: "0.9.0".to_string(), ..Installed::default()
+        });
+        let device = Device { arch: "armhf".into(), firmware: Version::parse("5.18.2").unwrap() };
+        assert!(update_order(std::slice::from_ref(&app), &installed, &device).is_err());
+        assert_eq!(update_order(&[app, dependency], &installed, &device).unwrap(), vec![1, 0]);
     }
 
     #[test]
