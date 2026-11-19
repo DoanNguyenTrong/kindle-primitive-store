@@ -282,13 +282,6 @@ pub fn load_collections(dir: &Path) -> Vec<Collection> {
         .unwrap_or_default()
 }
 
-pub fn clear_cache(dir: &Path) -> std::io::Result<()> {
-    match fs::remove_dir_all(dir.join("store/cache")) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -365,8 +358,8 @@ pub(crate) mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].action_label(), "Update");
         assert!(entries[0].can_remove());
-        clear_cache(&fixture.launcher).unwrap();
-        clear_cache(&fixture.launcher).unwrap();
+        kl_store::refresh::clear_cache(&fixture.launcher).unwrap();
+        kl_store::refresh::clear_cache(&fixture.launcher).unwrap();
         let preserved = load_store(&fixture.launcher);
         assert_eq!(preserved[0].action_label(), "Installed");
         assert!(preserved[0].can_remove());
