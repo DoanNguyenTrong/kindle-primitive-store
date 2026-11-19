@@ -5,8 +5,7 @@ on:
 
 jobs:
   release:
-    # Switch to the versioned build workflow once its v1 tag is approved.
-    uses: DoanNguyenTrong/kindle-primitive-build/.github/workflows/package.yml@main
+    uses: DoanNguyenTrong/kindle-primitive-build/.github/workflows/package.yml@9533d481058f4d67b29568f40b30017ddcb32c8e
     permissions:
       contents: write
     with:
