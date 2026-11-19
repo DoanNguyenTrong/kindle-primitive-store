@@ -1,27 +1,84 @@
+<div align="center">
+
 # Primitive Store
 
-The app store for jailbroken Kindle e-readers, as its own program. It shows the catalog (Today, Apps, Updates, Search), installs,
-updates and removes apps, and is opened from the Kindle's library (`Store.sh`), like Primitive Browser.
+**Find and manage apps on a jailbroken Kindle.**
 
-It has its own repository and its own deploy: changing the store does not require a launcher build.
+[**Install guide**](INSTALL.md) · [**Changelog**](CHANGELOG.md) · [**Licence**](#licence)
 
-- `crates/store-app`: the program (the screens, the event loop, the store's network and install work).
-- `tools/`: the shared kit (screen layout and renderer, the Kindle device layer, the store engine, the network code).
-- `deploy/`: `Store.sh` (the library entry) and `install-ssh.sh` (installs the program and the entry over SSH).
+</div>
 
-## Build a local package
+---
+
+Primitive Store brings Today, Apps, Updates, and Search to the Kindle in a grayscale interface. Open an app page to
+see the version, download size, firmware requirements, screenshots, and what it changes before you install.
+The Store is a standalone Rust application that uses Primitive Launcher's fonts and settings.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/store-today.png" alt="Today tab with a featured app and two collections" width="260"><br><sub>Featured apps and collections</sub></td>
+    <td align="center"><img src="docs/images/store-apps.png" alt="Apps tab with categories and Get buttons" width="260"><br><sub>Browse the catalogue</sub></td>
+    <td align="center"><img src="docs/images/store-search-keyboard.png" alt="Search for Browser with the on-screen keyboard" width="260"><br><sub>Find an app by name</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/store-app.png" alt="Primitive Blocks app page showing version, size, and firmware" width="260"><br><sub>Read an app's details</sub></td>
+    <td align="center"><img src="docs/images/store-install-sheet.png" alt="Install confirmation showing what Primitive Blocks changes" width="260"><br><sub>Review changes before installing</sub></td>
+    <td align="center"><img src="docs/images/store-updates.png" alt="Updates tab with one update ready and an Update all button" width="260"><br><sub>See what can be updated</sub></td>
+  </tr>
+</table>
+
+<sub>Captured from the macOS desktop preview with a private review catalogue and sample install states.</sub>
+
+## Highlights
+
+- **Browse offline.** The Store saves the catalogue so you can browse it after a refresh without Wi-Fi.
+- **Check every download.** The Store verifies the archive size and SHA-256. An optional trusted key enables Ed25519
+  verification for the catalogue and packages.
+- **Manage installed apps.** Open, update, and remove supported apps from their product pages. The Store keeps a
+  record of installed files and uses it to recover interrupted changes.
+
+## Quick start
+
+Set up Primitive Launcher on a jailbroken Kindle. Install a Store package over USB, or use the Launcher Store tile
+when a Store release is available in its catalogue. Open **Primitive Store** in the Launcher grid and use **Refresh**
+to fetch the catalogue. [Install guide](INSTALL.md)
+
+The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
+
+## Status
+
+The ARMHF candidate passed the Mac package and install simulation. The Oasis 3 is the target for the next
+hardware check. The package declares firmware 5.16.3 or later.
+
+<details>
+<summary><b>Build and test from source</b></summary>
+
+Use Rust, Zig, cargo-zigbuild, and the shared packager checked out as `../doannt-kindle-build`.
 
 ```sh
 git submodule update --init --recursive
-cargo zigbuild --release -p store-app --target armv7-unknown-linux-musleabihf
+cargo test --locked --workspace
+cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.0 --arch armhf --stage build/stage --license LICENSE --install INSTALL.md --out dist
+  --version 0.1.0 --arch armhf --stage build/stage --license LICENSE \
+  --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 
-See [INSTALL.md](INSTALL.md) for the launcher and USB installation paths. The store keeps its catalog, installed apps
-and records in the launcher's folder (`/mnt/us/launcher/store`).
+The program lives in `crates/store-app`. The shared screen, device, networking, and installer code lives in
+`tools/`. The library entry and SSH installer live in `deploy/`.
+
+</details>
 
 ## Licence
 
-Code: PolyForm Noncommercial 1.0.0. The shared kit in `tools/` is AGPL-3.0 or PolyForm Noncommercial 1.0.0.
+Copyright (C) 2026 Doan Nguyen.
+
+- **Code** is licensed under PolyForm Noncommercial 1.0.0. [Software licence](LICENSE)
+- **Original documentation and pictures**, including this README and its screenshots, are licensed under
+  CC BY-NC-SA 4.0. [Documentation and pictures licence](LICENSE-DOCS)
+- **Shared Tools** is available under AGPL-3.0 or PolyForm Noncommercial 1.0.0. [Shared Tools](tools/)
+- **KOReader artwork** in the catalogue screenshots is credited to the KOReader project and retains its own terms.
+  [KOReader](https://github.com/koreader/koreader)

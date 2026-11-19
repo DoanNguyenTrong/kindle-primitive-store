@@ -15,5 +15,6 @@ jobs:
       binary-crate: store-app
       arches: armhf
       firmware-min: "5.16.3"
+      docs-licence-file: LICENSE-DOCS
     secrets:
       package-scan-patterns: ${{ secrets.PACKAGE_SCAN_PATTERNS }}
