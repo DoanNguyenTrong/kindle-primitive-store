@@ -46,6 +46,9 @@ The Store is a standalone Rust application that uses Primitive Launcher's fonts 
 After setting up PrimitiveOS with Primitive Launcher, open **Store** from the Launcher grid and follow the
 installation prompt if it appears. Tap **Refresh** to fetch the catalogue. [Install guide](INSTALL.md)
 
+Launcher’s **Settings › Apps › Installed apps** shortcut opens the **Updates** tab directly on compatible builds.
+The tab shows installed apps even when the saved catalogue has been cleared.
+
 The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
 
 ## Status

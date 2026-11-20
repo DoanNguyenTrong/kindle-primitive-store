@@ -117,15 +117,26 @@ fn start_catalog_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, storage: &mut
     Some(store::start_store_refresh(tx.clone(), dir.to_path_buf()))
 }
 
+fn automatic_checks(settings: &Settings) -> bool {
+    settings.store_daily_check && !settings.low_power
+}
+
 fn maybe_refresh(ui: &mut Ui, dir: &Path, tx: &Sender<Ev>, settings: &Settings, status: &Status, storage: &mut StorageLease,
     refresh: &mut Option<store::CatalogRefresh>) -> bool {
-    if !settings.store_daily_check || ui.store_busy || ui.store_installing.is_some() || ui.store_batch_running
+    if !automatic_checks(settings) || ui.store_busy || ui.store_installing.is_some() || ui.store_batch_running
         || !connected(status)
     {
         return false;
     }
     *refresh = start_catalog_refresh(ui, dir, tx, storage);
     true
+}
+
+fn open_start_page(ui: &mut Ui, destination: Option<&str>) {
+    ui.open_store();
+    if destination == Some("installed") {
+        ui.store_tab = kl_core::store::StoreTab::Updates;
+    }
 }
 
 fn main() {
@@ -147,7 +158,7 @@ fn main() {
         format!("Store recovery is pending. {error}")
     });
 
-    let mut settings = Settings::parse(&fs::read_to_string(dir.join("settings.txt")).unwrap_or_default());
+    let mut settings = Settings::load(&dir.join("settings.txt"));
     if let Err(e) = set_orientation(&run, settings.rotation) {
         log(&format!("store: cannot write its screen orientation: {e}"));
     }
@@ -168,10 +179,16 @@ fn main() {
     release_write(&mut storage);
     ui.store_collections = collections;
     ui.set_store(entries);
-    ui.open_store();
+    open_start_page(&mut ui, std::env::var("KL_STORE_START_TAB").ok().as_deref());
 
     let mut display = Display::open();
-    let mut status = Status { usb: device::usb_state(), dark_mode: settings.dark_mode, rotation: settings.rotation, ..Status::default() };
+    let mut status = Status {
+        usb: device::usb_state(),
+        dark_mode: settings.dark_mode,
+        rotation: settings.rotation,
+        low_power: settings.low_power,
+        ..Status::default()
+    };
     ui.usb = status.usb;
     let (tx, rx) = channel::<Ev>();
     let mut artwork = artwork::Artwork::new(cache, tx.clone());
@@ -241,7 +258,7 @@ fn main() {
                 status.usb = usb;
                 let timed_refresh = if Instant::now() >= next_check {
                     next_check = Instant::now() + HOUR;
-                    if settings.store_daily_check && status.usb != Usb::Drive && catalog_is_stale(&dir, SystemTime::now()) {
+                    if automatic_checks(&settings) && status.usb != Usb::Drive && catalog_is_stale(&dir, SystemTime::now()) {
                         (status.wifi_on, status.wifi_state) = device::wifi_status();
                         maybe_refresh(&mut ui, &dir, &tx, &settings, &status, &mut storage, &mut refresh)
                     } else {
@@ -431,7 +448,7 @@ fn save_settings(dir: &Path, settings: &Settings) -> std::io::Result<()> {
     use std::io::Write;
     let pending = dir.join("settings.store.tmp");
     let mut file = fs::File::create(&pending)?;
-    file.write_all(settings.to_text().as_bytes())?;
+    file.write_all(settings.base_text().as_bytes())?;
     file.sync_all()?;
     fs::rename(pending, dir.join("settings.txt"))
 }
@@ -510,6 +527,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn apps_settings_opens_the_installed_list_from_local_receipts() {
+        let fixture = store::tests::Fixture::new();
+        let listing = store::tests::listing("https://example.com/app.zip", "", 100);
+        let installed = kl_store::record::Installed {
+            id: listing.id.clone(), version: "1.0.0".into(),
+            ..kl_store::record::Installed::default()
+        };
+        let mut record = kl_store::record::Record::new();
+        record.apps.insert(installed.id.clone(), installed);
+        kl_store::record::save(&fixture.launcher.join("store/installed.json"), &record).unwrap();
+
+        let (entries, _, _) = store::load_catalog_view(&fixture.launcher);
+        let mut ui = Ui::new(Vec::new(), Layout::new(W, H, 4, 5));
+        ui.set_store(entries);
+        open_start_page(&mut ui, Some("installed"));
+        assert_eq!(ui.screen, Screen::Store);
+        assert_eq!(ui.store_tab, kl_core::store::StoreTab::Updates);
+        assert_eq!(ui.store_page, 0);
+        let indices = ui.store_list_indices();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(ui.store[indices[0]].id, listing.id);
+        assert!(ui.store[indices[0]].can_remove());
+
+        open_start_page(&mut ui, None);
+        assert_eq!(ui.store_tab, kl_core::store::StoreTab::Today);
+        open_start_page(&mut ui, Some("unknown"));
+        assert_eq!(ui.store_tab, kl_core::store::StoreTab::Today);
+    }
+
+    #[test]
     fn done_requests_refresh_cancellation_without_interrupting_package_writes() {
         let mut ui = Ui::new(Vec::new(), Layout::new(W, H, 4, 5));
         let mut storage = StorageLease::new(Path::new("/unused"), false);
@@ -554,6 +601,22 @@ mod tests {
         assert!(request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Drive, true).is_err());
         request_open(Some(&app), &fixture.launcher, &documents, &run, Usb::Unplugged, true).unwrap();
         assert_eq!(store_open::take_request(&run).unwrap(), Some(listing.id));
+    }
+
+    #[test]
+    fn low_power_defers_automatic_checks_without_disabling_manual_refresh() {
+        let mut settings = Settings { low_power: true, ..Settings::default() };
+        assert!(!automatic_checks(&settings));
+        assert!(settings.store_daily_check);
+        let status = Status {
+            low_power: true,
+            wifi_on: true,
+            wifi_state: "connected".into(),
+            ..Status::default()
+        };
+        assert_eq!(store_command(DeviceCmd::StoreRefresh, &status, &[]).1, Effect::Refresh);
+        settings.low_power = false;
+        assert!(automatic_checks(&settings));
     }
 
     #[test]

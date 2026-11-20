@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5
+
+- Open the Updates tab and installed-app list from Launcher Settings.
+- Defer automatic catalog checks in Launcher Low power mode. Manual Refresh remains available.
+
 ## 0.1.4
 
 - Show the cached catalog immediately and preload icons for nearby pages. Decode screenshots when opening an app page.
