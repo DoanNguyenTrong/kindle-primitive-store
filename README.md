@@ -60,12 +60,12 @@ on refresh and can show it offline. **Unavailable** means the catalogue hasn't s
 
 The daily catalog workflow collects per-app totals from GitHub release metadata. Totals include package downloads
 through Store, direct downloads, updates, repeats, and automated checks.
-[Catalog workflow and reports](https://github.com/DoanNguyenTrong/kindle-primitive-catalog/actions/workflows/catalog.yml)
+[Catalog workflow and reports](https://github.com/PrimitiveOS/kindle-primitive-catalog/actions/workflows/catalog.yml)
 
 ## Status
 
 Store 0.1.6 passed desktop scrolling and download count checks, and the published package was installed on a
-Kindle Oasis 3 running firmware 5.18.2. [Store 0.1.6 release](https://github.com/DoanNguyenTrong/kindle-primitive-store/releases/tag/v0.1.6)
+Kindle Oasis 3 running firmware 5.18.2. [Store 0.1.6 release](https://github.com/PrimitiveOS/kindle-primitive-store/releases/tag/v0.1.6)
 
 Store 0.1.2 refreshed the live catalogue and installed ARMHF apps over Wi-Fi on a Kindle Oasis 3 running
 firmware 5.18.2. The package declares firmware 5.16.3 or later.

@@ -5,7 +5,7 @@ records in `launcher/store/`. This package is built for hard-float Kindles with 
 
 ## Install from Launcher
 
-Complete the [first-time PrimitiveOS setup](https://github.com/DoanNguyenTrong/kindle-primitive-launcher/blob/main/docs/INSTALL.md#first-time-setup-over-usb)
+Complete the [first-time PrimitiveOS setup](https://github.com/PrimitiveOS/kindle-primitive-launcher/blob/main/docs/INSTALL.md#first-time-setup-over-usb)
 with Primitive Launcher. Open the **Store** tile and follow the installation prompt, then use **Refresh** to get
 the catalog.
 
