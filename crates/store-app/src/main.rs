@@ -322,7 +322,9 @@ fn main() {
         // Done (back to the home screen) ends the store: the launcher takes the screen again.
         if ui.screen == Screen::Home {
             if !request_exit(&mut ui, &storage, refresh.as_ref()) {
+                ui.clamp_store_list_scroll();
                 display.show(renderer.draw(&ui, &status), &settings, false);
+                artwork.update_page(&ui, &mut renderer);
                 continue;
             }
             log("store: done");
@@ -331,6 +333,7 @@ fn main() {
         match action {
             Action::Redraw { .. } if ui.screen == Screen::Sleep => {}
             Action::Redraw { full } => {
+                ui.clamp_store_list_scroll();
                 display.show(renderer.draw(&ui, &status), &settings, full);
                 artwork.update_page(&ui, &mut renderer);
             }
@@ -383,6 +386,7 @@ fn main() {
                     refresh = Some(started);
                 }
                 let full = closed_modal && ui.store_sheet.is_none() && !ui.store_batch_confirm;
+                ui.clamp_store_list_scroll();
                 display.show(renderer.draw(&ui, &status), &settings, full);
                 artwork.update_page(&ui, &mut renderer);
             }
@@ -544,7 +548,7 @@ mod tests {
         open_start_page(&mut ui, Some("installed"));
         assert_eq!(ui.screen, Screen::Store);
         assert_eq!(ui.store_tab, kl_core::store::StoreTab::Updates);
-        assert_eq!(ui.store_page, 0);
+        assert_eq!(ui.store_list_scroll, 0);
         let indices = ui.store_list_indices();
         assert_eq!(indices.len(), 1);
         assert_eq!(ui.store[indices[0]].id, listing.id);

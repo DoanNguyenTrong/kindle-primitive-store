@@ -392,10 +392,14 @@ fn load_entries(dir: &Path, catalog: Option<&CachedCatalog>) -> Vec<StoreEntry> 
             let Some(id) = path.file_stem().and_then(|name| name.to_str()).filter(|id| valid_app_id(id)) else { continue };
             let Ok(listing) = catalog.listing(id) else { continue };
             let installed_app = installed.apps.remove(&listing.id);
-            entries.push(match &device {
+            let mut entry = match &device {
                 Some(device) => StoreEntry::for_device(&listing, installed_app.as_ref(), device),
                 None => StoreEntry::from_listing(&listing, installed_app.as_ref()),
-            });
+            };
+            if entry.kind != kl_core::store::Kind::Link {
+                entry.downloads = catalog.download_count(id);
+            }
+            entries.push(entry);
         }
     }
     entries.extend(installed.apps.values().map(StoreEntry::from_installed));
@@ -498,6 +502,32 @@ pub(crate) mod tests {
         let preserved = load_store(&fixture.launcher);
         assert_eq!(preserved[0].action_label(), "Installed");
         assert!(preserved[0].can_remove());
+    }
+
+    #[test]
+    fn catalog_view_shows_cached_download_totals_and_distinguishes_zero_from_unknown() {
+        let fixture = Fixture::new();
+        let app = listing("https://example.com/app.zip", "", 100);
+        fixture.write_listing(&app);
+        let index_path = fixture.launcher.join("store/cache/index.json");
+        let mut index = serde_json::json!({
+            "schema": 1, "generated_at": "2026-11-20T10:00:00Z", "apps": [{
+                "id": app.id, "name": app.name, "subtitle": app.subtitle, "categories": app.categories,
+                "icon": "icon.png", "source": app.source, "latest_version": "1.0.0",
+                "arch": ["armhf"], "updated_at": "2026-11-20"
+            }],
+            "downloads": {"as_of": "2026-11-20T10:00:00Z", "by_app": {(ID): 0}}
+        });
+        fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let (apps, _, _) = load_catalog_view(&fixture.launcher);
+        assert_eq!(apps[0].downloads, Some(0));
+
+        index["downloads"]["by_app"][ID] = 45.into();
+        fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        assert_eq!(load_store(&fixture.launcher)[0].downloads, Some(45));
+
+        fs::remove_file(index_path).unwrap();
+        assert_eq!(load_store(&fixture.launcher)[0].downloads, None);
     }
 
     #[test]

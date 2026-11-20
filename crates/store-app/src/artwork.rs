@@ -1,4 +1,4 @@
-//! Prepare the current page's artwork off the event loop, then warm the adjacent pages.
+//! Prepare visible artwork off the event loop, then preload icons near the viewport.
 
 use std::{
     collections::HashSet,
@@ -72,27 +72,14 @@ impl PageArtwork {
         page
     }
 
-    fn rows<'a>(ui: &'a Ui, indices: impl Iterator<Item = usize> + 'a) -> impl Iterator<Item = Asset> + 'a {
-        indices.filter_map(move |index| ui.store.get(index))
-            .map(|entry| Asset::Icon(entry.id.clone(), STORE_ROW_ICON))
-    }
-
     fn for_list(ui: &Ui) -> Self {
-        if ui.store_tab == StoreTab::Today {
-            let mut visible: Vec<_> = ui.store_featured().into_iter()
-                .map(|index| Asset::Icon(ui.store[index].id.clone(), STORE_FEATURE_ICON)).collect();
-            if ui.store_today_collection_page().is_empty() {
-                visible.extend(Self::rows(ui, ui.store_today_rows().into_iter()));
-            }
-            let nearby = Self::rows(ui, (0..ui.store.len()).take(ui.layout.store_toolbar_rows())).collect();
-            return Self { visible, nearby };
-        }
-
-        let indices = ui.store_list_indices();
-        let per_page = ui.store_rows_per_page();
-        let page = |number: usize| Self::rows(ui, indices.iter().copied().skip(number * per_page).take(per_page));
-        let visible = page(ui.store_page).collect();
-        let nearby = page(ui.store_page + 1).chain(ui.store_page.checked_sub(1).into_iter().flat_map(page)).collect();
+        let featured = if ui.store_tab == StoreTab::Today { ui.store_featured() } else { None };
+        let icon = |index: usize| {
+            let size = if Some(index) == featured { STORE_FEATURE_ICON } else { STORE_ROW_ICON };
+            Asset::Icon(ui.store[index].id.clone(), size)
+        };
+        let visible = ui.store_visible_entries().into_iter().map(|(_, index)| icon(index)).collect();
+        let nearby = ui.store_nearby_entries().into_iter().map(icon).collect();
         Self { visible, nearby }
     }
 
@@ -195,7 +182,7 @@ impl Artwork {
         }
         let next = PageArtwork::for_ui(ui);
         if self.page != next {
-            // Let the panel settle before preparing off-screen art, especially during rapid paging.
+            // Let the panel settle before preparing off-screen art, especially during rapid scrolling.
             self.preload_after = Instant::now() + Duration::from_millis(450);
             self.page = next;
         }
@@ -244,7 +231,7 @@ impl Artwork {
         }
         let mut assets: Vec<_> = self.page.visible.iter().filter(|asset| !self.attempted.contains(*asset)).cloned().collect();
         if assets.is_empty() && Instant::now() >= self.preload_after {
-            // A single speculative decode never holds up more than one tile if the user changes pages.
+            // Keep speculative work to one tile so visible icons take priority after a scroll.
             assets.extend(self.page.nearby.iter().filter(|asset| !self.attempted.contains(*asset)).take(1).cloned());
         }
         if !assets.is_empty() {
@@ -274,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn today_warms_only_the_first_apps_page() {
+    fn today_preloads_nearby_app_icons() {
         let ui = catalog();
         let page = PageArtwork::for_ui(&ui);
         assert_eq!(page.visible, [
@@ -282,23 +269,26 @@ mod tests {
             Asset::Icon("app-01".into(), STORE_ROW_ICON),
             Asset::Icon("app-02".into(), STORE_ROW_ICON),
         ]);
-        assert_eq!(page.all().count(), ui.layout.store_toolbar_rows() + 1);
+        assert!(page.nearby.contains(&Asset::Icon("app-03".into(), STORE_ROW_ICON)));
+        assert!(page.all().count() < 30);
         assert!(page.all().all(|asset| matches!(asset, Asset::Icon(..))));
     }
 
     #[test]
-    fn list_artwork_is_limited_to_three_pages_and_respects_search() {
+    fn list_artwork_is_bounded_near_the_scroll_position_and_respects_search() {
         let mut ui = catalog();
         ui.store_tab = StoreTab::Apps;
-        ui.store_page = 3;
-        let per_page = ui.store_rows_per_page();
+        let row_height = ui.layout.store_list_row(0).h;
+        ui.store_list_scroll = 20 * row_height + 30;
         let page = PageArtwork::for_ui(&ui);
-        assert_eq!(page.visible[0], Asset::Icon(format!("app-{:02}", per_page * 3), STORE_ROW_ICON));
-        assert_eq!(page.visible.len(), per_page);
-        assert_eq!(page.nearby.len(), 2 * per_page);
+        assert_eq!(page.visible[0], Asset::Icon("app-20".into(), STORE_ROW_ICON));
+        assert!(page.nearby.contains(&Asset::Icon("app-19".into(), STORE_ROW_ICON)));
+        assert!(page.nearby.contains(&Asset::Icon("app-31".into(), STORE_ROW_ICON)));
+        assert!(page.all().count() < 30);
+        assert!(page.nearby.iter().all(|asset| !page.visible.contains(asset)));
 
         ui.store_tab = StoreTab::Search;
-        ui.store_page = 0;
+        ui.store_list_scroll = 0;
         ui.store_query.text = "needle".chars().collect();
         ui.store[90].subtitle = "a needle".into();
         ui.store[91].subtitle = "another needle".into();

@@ -11,29 +11,31 @@
 ---
 
 Store brings Today, Apps, Updates, and Search to the Kindle in a grayscale interface. Open an app page to
-see the version, download size, firmware requirements, screenshots, and what it changes before you install.
+see its download count, version, download size, firmware requirements, screenshots, and what it changes before you install.
 The Store is a standalone Rust application that uses Primitive Launcher's fonts and settings.
 
 ## Screenshots
 
 <table>
   <tr>
-    <td align="center"><img src="docs/images/store-today.png" alt="Today tab with a featured app and two collections" width="260"><br><sub>Featured apps and collections</sub></td>
+    <td align="center"><img src="docs/images/store-today.png" alt="Today tab with a featured app and collections" width="260"><br><sub>Featured apps and collections</sub></td>
     <td align="center"><img src="docs/images/store-apps.png" alt="Apps tab with categories and Get buttons" width="260"><br><sub>Browse the catalogue</sub></td>
     <td align="center"><img src="docs/images/store-search-keyboard.png" alt="Search for Browser with the on-screen keyboard" width="260"><br><sub>Find an app by name</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/images/store-app.png" alt="Blocks app page showing version, size, and firmware" width="260"><br><sub>Read an app's details</sub></td>
+    <td align="center"><img src="docs/images/store-app.png" alt="2048 app page with its Downloads count and other app details" width="260"><br><sub>Read an app's details</sub></td>
     <td align="center"><img src="docs/images/store-install-sheet.png" alt="Install confirmation showing what Blocks changes" width="260"><br><sub>Review changes before installing</sub></td>
     <td align="center"><img src="docs/images/store-updates.png" alt="Updates tab with one update ready and an Update all button" width="260"><br><sub>See what can be updated</sub></td>
   </tr>
 </table>
 
-<sub>Captured from the macOS desktop preview with a private review catalogue and sample install states.</sub>
+<sub>Captured from the macOS desktop preview with local catalogue data and sample install states.</sub>
 
 ## Highlights
 
 - **Browse offline.** The Store saves the catalogue so you can browse it after a refresh without Wi-Fi.
+- **Scroll through apps.** Swipe up or down to browse long lists. The tabs stay within reach, and Back from an
+  app page returns to the same spot. [Scrolled Apps tab](docs/images/store-apps-scrolled.png)
 - **See refresh progress.** Store shows how many listings it has checked. Tap **Done** to stop a refresh and
   return to Launcher.
 - **Check every download.** The Store verifies the archive size and SHA-256. An optional trusted key enables Ed25519
@@ -53,10 +55,12 @@ The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
 
 ## App download counts
 
-Open the latest successful **App download counts** run and select **Summary** to see per-app totals. The
-`app-download-counts` artifact includes CSV, JSON, and Markdown. The report updates daily from GitHub release metadata.
-Totals include package downloads through Store, direct downloads, updates, repeats, and automated checks.
-[App download counts](https://github.com/DoanNguyenTrong/kindle-primitive-catalog/actions/workflows/download-counts.yml)
+Open an app page to see **Downloads** in its information strip. Store saves the catalogue's latest available total
+on refresh and can show it offline. **Unavailable** means the catalogue hasn't supplied a total for that app.
+
+The daily catalog workflow collects per-app totals from GitHub release metadata. Totals include package downloads
+through Store, direct downloads, updates, repeats, and automated checks.
+[Catalog workflow and reports](https://github.com/DoanNguyenTrong/kindle-primitive-catalog/actions/workflows/catalog.yml)
 
 ## Status
 
@@ -74,7 +78,7 @@ cargo test --locked --workspace
 cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.3 --arch armhf --stage build/stage --license LICENSE \
+  --version 0.1.6 --arch armhf --firmware-min 5.16.3 --stage build/stage --license LICENSE \
   --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 

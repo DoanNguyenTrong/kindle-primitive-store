@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.6
+
+- Swipe vertically through Store lists. The fixed tab bar leaves more room for app rows.
+- Restore the list position when returning from a product page. Preload icons around the visible rows.
+- Show GitHub package download totals on app pages from the saved catalog.
+
 ## 0.1.5
 
 - Open the Updates tab and installed-app list from Launcher Settings.
