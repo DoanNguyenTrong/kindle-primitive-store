@@ -51,6 +51,13 @@ The tab shows installed apps even when the saved catalogue has been cleared.
 
 The Store saves its catalogue and install records in `/mnt/us/launcher/store/`.
 
+## App download counts
+
+Open the latest successful **App download counts** run and select **Summary** to see per-app totals. The
+`app-download-counts` artifact includes CSV, JSON, and Markdown. The report updates daily from GitHub release metadata.
+Totals include package downloads through Store, direct downloads, updates, repeats, and automated checks.
+[App download counts](https://github.com/DoanNguyenTrong/kindle-primitive-catalog/actions/workflows/download-counts.yml)
+
 ## Status
 
 Store 0.1.2 refreshed the live catalogue and installed ARMHF apps over Wi-Fi on a Kindle Oasis 3 running
