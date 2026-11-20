@@ -24,7 +24,7 @@ use kl_store::{
 use primitive_net::{NetError, Policy};
 
 /// The catalog's published site (the store's source of listings, icons and screenshots).
-const STORE_CATALOG: &str = "https://doannguyentrong.github.io/kindle-primitive-catalog/v1";
+const STORE_CATALOG: &str = "https://primitiveos.github.io/kindle-primitive-catalog/v1";
 const CATALOG_REQUEST_TIMEOUT: Duration = Duration::from_secs(7);
 const CATALOG_PROGRESS_INTERVAL: Duration = Duration::from_millis(1500);
 

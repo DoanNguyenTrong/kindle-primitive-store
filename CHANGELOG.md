@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Refresh from the PrimitiveOS organization’s Store catalog.
+
 ## 0.1.6
 
 - Swipe vertically through Store lists. The fixed tab bar leaves more room for app rows.
