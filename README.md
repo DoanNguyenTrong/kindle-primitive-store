@@ -64,6 +64,9 @@ through Store, direct downloads, updates, repeats, and automated checks.
 
 ## Status
 
+Store 0.1.7 refreshes from the PrimitiveOS organization’s catalog.
+[Store 0.1.7 release](https://github.com/PrimitiveOS/kindle-primitive-store/releases/tag/v0.1.7) · [Live catalog](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json)
+
 Store 0.1.6 passed desktop scrolling and download count checks, and the published package was installed on a
 Kindle Oasis 3 running firmware 5.18.2. [Store 0.1.6 release](https://github.com/PrimitiveOS/kindle-primitive-store/releases/tag/v0.1.6)
 
@@ -81,7 +84,7 @@ cargo test --locked --workspace
 cargo zigbuild --locked --release -p store-app --target armv7-unknown-linux-musleabihf
 sh scripts/stage.sh armhf
 python3 ../doannt-kindle-build/scripts/package.py --id primitive-store --dir store \
-  --version 0.1.6 --arch armhf --firmware-min 5.16.3 --stage build/stage --license LICENSE \
+  --version 0.1.7 --arch armhf --firmware-min 5.16.3 --stage build/stage --license LICENSE \
   --docs-license LICENSE-DOCS --install INSTALL.md --out dist
 ```
 
