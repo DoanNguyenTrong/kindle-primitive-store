@@ -64,6 +64,9 @@ through Store, direct downloads, updates, repeats, and automated checks.
 
 ## Status
 
+Store 0.1.6 passed desktop scrolling and download count checks, and the published package was installed on a
+Kindle Oasis 3 running firmware 5.18.2. [Store 0.1.6 release](https://github.com/DoanNguyenTrong/kindle-primitive-store/releases/tag/v0.1.6)
+
 Store 0.1.2 refreshed the live catalogue and installed ARMHF apps over Wi-Fi on a Kindle Oasis 3 running
 firmware 5.18.2. The package declares firmware 5.16.3 or later.
 
