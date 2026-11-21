@@ -1,8 +1,10 @@
 <div align="center">
 
+<img src="icon.png" alt="Store icon" width="110">
+
 # Store
 
-**Find and manage PrimitiveOS apps on your Kindle.**
+**Find apps for PrimitiveOS**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/PrimitiveOS/kindle-primitive-store/ci.yml?branch=main&label=CI)](https://github.com/PrimitiveOS/kindle-primitive-store/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/PrimitiveOS/kindle-primitive-store?label=release)](https://github.com/PrimitiveOS/kindle-primitive-store/releases)
@@ -11,8 +13,9 @@
 [![Stars](https://img.shields.io/github/stars/PrimitiveOS/kindle-primitive-store?style=social)](https://github.com/PrimitiveOS/kindle-primitive-store/stargazers)
 [![Store downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fprimitiveos.github.io%2Fkindle-primitive-catalog%2Fv1%2Fbadges%2Fprimitive-store.json)](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json)
 
-
-[**Install guide**](INSTALL.md) · [**Changelog**](CHANGELOG.md) · [**Licence**](#licence)
+[**Download**](https://github.com/PrimitiveOS/kindle-primitive-store/releases/latest) ·
+[**Install guide**](INSTALL.md) ·
+[**Changelog**](CHANGELOG.md)
 
 </div>
 
