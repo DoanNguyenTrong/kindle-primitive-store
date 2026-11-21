@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.10
+
+- Installs by architecture only. Apps are not limited by Kindle firmware; an app with no package for this Kindle's architecture (armhf) is not listed.
+- The app page says "Not tested on your Kindle yet" when the Kindle model is not one the app was tested on, and that the model is not known when the launcher could not tell it.
+- The Kindle model comes from the launcher (Settings › Device), where it is detected or chosen.
+
 ## 0.1.9
 
 - A tap on a tab, a button, a row or a card is shown reversed before its action runs, as on the home screen.
