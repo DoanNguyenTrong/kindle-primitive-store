@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8
+
+- Follow Primitive Launcher's system layer. Store.sh declares `# Wake: redraw`. When the launcher asks, Store reads the
+  theme again and redraws its whole screen without a flash.
+- Under the launcher, leave the swipe down from the top edge to the launcher's quick settings. Do not redraw again on
+  wake, as the launcher has already put the screen back.
+
 ## 0.1.7
 
 - Refresh from the PrimitiveOS organization’s Store catalog.

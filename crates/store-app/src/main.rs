@@ -8,6 +8,7 @@ mod crash_log;
 mod requirements;
 mod storage_lease;
 mod store;
+mod system_layer;
 
 use std::{
     fs,
@@ -25,6 +26,7 @@ use kl_core::{Action, DeviceCmd, Input, Layout, Rotation, Screen, Settings, Stat
 use kl_kindle::{device, display::Display, input, log, profile, Ev};
 use kl_render::Renderer;
 use storage_lease::StorageLease;
+use system_layer::SystemLayer;
 
 const W: u32 = profile::ACTIVE.screen_w;
 const H: u32 = profile::ACTIVE.screen_h;
@@ -141,6 +143,11 @@ fn open_start_page(ui: &mut Ui, destination: Option<&str>) {
 
 fn main() {
     let launched = Instant::now();
+    // Under the launcher SIGUSR1 is its redraw request, which Store.sh ignores: take it before anything slow.
+    let mut system = SystemLayer::new(system_layer::under_launcher());
+    if system.active() {
+        system_layer::take_signal();
+    }
     let dir = env_dir("KL_DIR", "/mnt/us/launcher");
     let run = env_dir("KL_RUN", "/var/tmp/kl-store");
     let documents = env_dir("KL_DOCUMENTS", "/mnt/us/documents");
@@ -200,9 +207,15 @@ fn main() {
         let t = tx.clone();
         thread::spawn(move || input::button_loop(path, t));
     }
+    // Power events only pause drawing while the Kindle sleeps: Store never draws the sleep picture itself. Under the
+    // launcher it does not redraw on wake either, as the launcher puts the screen back.
     {
         let t = tx.clone();
         thread::spawn(move || device::power_loop(t));
+    }
+    if system.active() {
+        system_layer::wake_loop_on_request(tx.clone());
+        log("store: under Primitive Launcher: the system layer owns sleep, quick settings and the theme");
     }
     if settings.auto_rotation {
         let t = tx.clone();
@@ -232,11 +245,36 @@ fn main() {
     artwork.update_page(&ui, &mut renderer);
 
     while let Ok(ev) = rx.recv() {
+        // The launcher's redraw request (sent while Store was frozen) comes before the event that woke the loop, so
+        // nothing that waited behind the freeze is drawn in the old theme first.
+        if system.active() && system_layer::take_request() {
+            let turned = system_layer::follow_settings(&mut settings, Settings::load(&dir.join("settings.txt")));
+            status.dark_mode = settings.dark_mode;
+            status.rotation = settings.rotation;
+            status.low_power = settings.low_power;
+            ui.store_daily_check = settings.store_daily_check;
+            if turned {
+                if let Err(e) = set_orientation(&run, settings.rotation) {
+                    log(&format!("store: cannot write its screen orientation: {e}"));
+                }
+            }
+            log(&format!("store: redraw requested by the launcher (dark mode {})", settings.dark_mode));
+            if system.draw_now(ui.screen == Screen::Sleep) {
+                // The launcher has just updated the whole screen (a theme switch flashes it): a second flash would
+                // show the old theme for a moment, the inverse of the new one.
+                ui.clamp_store_list_scroll();
+                display.show_calm(renderer.draw(&ui, &status), &settings);
+                artwork.update_page(&ui, &mut renderer);
+            }
+        }
         let action = match ev {
+            // Under the launcher the top-edge swipe opens its quick settings over Store: it is not Store's.
+            Ev::Input(input) if system.ignores(input, ui.layout.status().bottom()) => Action::None,
             Ev::Input(Input::Wake) => {
                 status.usb = device::usb_state();
                 ui.usb = status.usb;
-                ui.handle(Input::Wake)
+                let woke = ui.handle(Input::Wake);
+                system.after_wake(woke)
             }
             Ev::Input(input) => {
                 if ui.press_feedback(input) {
