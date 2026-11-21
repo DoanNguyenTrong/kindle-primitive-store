@@ -4,6 +4,14 @@
 
 **Find and manage PrimitiveOS apps on your Kindle.**
 
+[![CI](https://img.shields.io/github/actions/workflow/status/PrimitiveOS/kindle-primitive-store/ci.yml?branch=main&label=CI)](https://github.com/PrimitiveOS/kindle-primitive-store/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/PrimitiveOS/kindle-primitive-store?label=release)](https://github.com/PrimitiveOS/kindle-primitive-store/releases)
+[![Tag](https://img.shields.io/github/v/tag/PrimitiveOS/kindle-primitive-store?label=tag)](https://github.com/PrimitiveOS/kindle-primitive-store/tags)
+[![Licence: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licence-PolyForm%20Noncommercial%201.0.0-blue)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/PrimitiveOS/kindle-primitive-store?style=social)](https://github.com/PrimitiveOS/kindle-primitive-store/stargazers)
+[![Store downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fprimitiveos.github.io%2Fkindle-primitive-catalog%2Fv1%2Fbadges%2Fprimitive-store.json)](https://primitiveos.github.io/kindle-primitive-catalog/v1/index.json)
+
+
 [**Install guide**](INSTALL.md) · [**Changelog**](CHANGELOG.md) · [**Licence**](#licence)
 
 </div>
