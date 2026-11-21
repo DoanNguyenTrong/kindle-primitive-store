@@ -382,6 +382,8 @@ pub fn load_catalog_artwork(dir: &Path) -> (Vec<Collection>, Option<PathBuf>) {
 fn load_entries(dir: &Path, catalog: Option<&CachedCatalog>) -> Vec<StoreEntry> {
     let mut installed = record(dir).unwrap_or_default();
     let device = device::store_device();
+    // The model the launcher detected or the owner chose (its catalog name), or None when it is not known.
+    let model = device::launcher_model(dir);
     let mut entries = Vec::new();
     if let Some(catalog) = catalog {
         let files = fs::read_dir(catalog.directory().join("apps"));
@@ -391,12 +393,19 @@ fn load_entries(dir: &Path, catalog: Option<&CachedCatalog>) -> Vec<StoreEntry> 
             }
             let Some(id) = path.file_stem().and_then(|name| name.to_str()).filter(|id| valid_app_id(id)) else { continue };
             let Ok(listing) = catalog.listing(id) else { continue };
+            // An app with no package for this Kindle's architecture is not listed, unless it is installed.
+            if let Some(device) = &device {
+                if !kl_core::store::listed_for_device(&listing, device) && !installed.apps.contains_key(&listing.id) {
+                    continue;
+                }
+            }
             let installed_app = installed.apps.remove(&listing.id);
             let mut entry = match &device {
                 Some(device) => StoreEntry::for_device(&listing, installed_app.as_ref(), device),
                 None => StoreEntry::from_listing(&listing, installed_app.as_ref()),
             };
             if entry.kind != kl_core::store::Kind::Link {
+                entry.note_for_model(model.as_deref());
                 entry.downloads = catalog.download_count(id);
             }
             entries.push(entry);
