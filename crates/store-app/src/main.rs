@@ -282,6 +282,12 @@ fn main() {
                         display.show_region(renderer.draw(&ui, &status), rect, &settings);
                     }
                 }
+                // Any control under a tap is drawn reversed before its action runs (tabs, rows, buttons).
+                if let Input::Tap(x, y) = input {
+                    if let Some(frame) = renderer.press_frame(&ui, &status, x, y) {
+                        display.show(frame, &settings, false);
+                    }
+                }
                 ui.handle(input)
             }
             Ev::Tick if ui.screen == Screen::Sleep => {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.9
+
+- A tap on a tab, a button, a row or a card is shown reversed before its action runs, as on the home screen.
+
 ## 0.1.8
 
 - Follow Primitive Launcher's system layer. Store.sh declares `# Wake: redraw`. When the launcher asks, Store reads the
